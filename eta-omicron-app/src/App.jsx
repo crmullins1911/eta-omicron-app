@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import {
-  Home, CalendarDays, Users, CircleDollarSign, Images,
-  Plus, Check, Clock, MapPin, X, Camera, Heart, LogOut
+  Home, CalendarDays, Users, CircleDollarSign, Images, MessageCircle,
+  Plus, Check, Clock, MapPin, X, Camera, Heart, LogOut, ArrowLeft, Send
 } from "lucide-react";
 import { supabase, SUPABASE_URL } from "./supabaseClient";
 
@@ -126,7 +126,7 @@ function LoginScreen() {
       <div className="w-full h-px mb-8" style={{ background: C.purpleSoft }} />
 
       <div className="text-sm mb-4" style={{ color: "#D9CDEC", ...sans }}>
-        {mode === "signin" && "Sign in with the email your Admin added you with."}
+        {mode === "signin" && "Sign in with the email your admin added you with."}
         {mode === "signup" && "First time here? Set a password for that email."}
         {mode === "forgot" && "Enter your email and we'll send a reset link."}
       </div>
@@ -236,7 +236,7 @@ function NotAMemberScreen({ email }) {
   return (
     <div className="h-full flex flex-col items-center justify-center px-8 text-center" style={{ background: `linear-gradient(180deg, ${C.purpleDeep} 0%, ${C.purple} 100%)` }}>
       <div className="text-sm mb-4" style={{ color: "#D9CDEC", ...sans }}>
-        No roster entry found for <b style={{ color: C.ivory }}>{email}</b>. Ask a chapter officer to add you first.
+        No roster entry found for <b style={{ color: C.ivory }}>{email}</b>. Ask a chapter admin to add you first.
       </div>
       <button onClick={() => supabase.auth.signOut()} className="text-xs px-4 py-2 rounded-sm" style={{ border: `1px solid ${C.goldSoft}`, color: C.ivory, ...sans }}>
         Sign out
@@ -317,6 +317,7 @@ function AppShell({ member, tab, setTab }) {
           />
         )}
         {tab === "feed" && <FeedScreen feed={feed} onAddPost={addPost} />}
+        {tab === "messages" && <MessagesScreen member={member} members={members} />}
       </div>
 
       <TabBar tab={tab} setTab={setTab} member={member} />
@@ -348,7 +349,7 @@ function HomeScreen({ member, events }) {
       <div className="rounded-sm p-4 mb-5" style={{ background: C.purple }}>
         <div className="text-xs mb-1" style={{ color: C.goldSoft, ...sans, letterSpacing: "0.1em" }}>CHAPTER HISTORY</div>
         <div className="text-sm leading-relaxed" style={{ color: C.ivory, ...sans }}>
-          Chartered to serve the surrounding community through Manhood, Scholarship, Perseverance, and Uplift.
+          Chartered to serve Calhoun County and the surrounding community through Manhood, Scholarship, Perseverance, and Uplift.
         </div>
       </div>
       <div className="text-xs mb-2" style={{ color: C.inkSoft, ...sans, letterSpacing: "0.08em" }}>UPCOMING</div>
@@ -559,6 +560,387 @@ function FeedScreen({ feed, onAddPost }) {
   );
 }
 
+// ---- Messages ----
+
+function MessagesScreen({ member, members }) {
+  const [subTab, setSubTab] = useState("chapter"); // "chapter" | "groups" | "direct"
+  const [activeThreadWith, setActiveThreadWith] = useState(null); // member object or null
+  const [activeGroup, setActiveGroup] = useState(null); // group object or null
+
+  if (subTab === "direct" && activeThreadWith) {
+    return <DirectThread me={member} other={activeThreadWith} onBack={() => setActiveThreadWith(null)} />;
+  }
+  if (subTab === "groups" && activeGroup) {
+    return <GroupThread me={member} group={activeGroup} members={members} onBack={() => setActiveGroup(null)} />;
+  }
+
+  return (
+    <div className="px-5">
+      <ScreenHeader title="Messages" subtitle={subTab === "chapter" ? "Chapter-wide chat" : subTab === "groups" ? "Group chats" : "Direct messages"} />
+
+      <div className="flex mb-4 rounded-sm overflow-hidden" style={{ border: `1px solid ${C.line}` }}>
+        <button onClick={() => setSubTab("chapter")} className="flex-1 py-2 text-xs" style={subTab === "chapter" ? { background: C.purple, color: C.ivory, ...sans } : { background: "#fff", color: C.inkSoft, ...sans }}>
+          Chapter
+        </button>
+        <button onClick={() => setSubTab("groups")} className="flex-1 py-2 text-xs" style={subTab === "groups" ? { background: C.purple, color: C.ivory, ...sans } : { background: "#fff", color: C.inkSoft, ...sans }}>
+          Groups
+        </button>
+        <button onClick={() => setSubTab("direct")} className="flex-1 py-2 text-xs" style={subTab === "direct" ? { background: C.purple, color: C.ivory, ...sans } : { background: "#fff", color: C.inkSoft, ...sans }}>
+          Direct
+        </button>
+      </div>
+
+      {subTab === "chapter" && <ChapterChat me={member} />}
+      {subTab === "groups" && <GroupsList me={member} members={members} onOpen={setActiveGroup} />}
+      {subTab === "direct" && (
+        <div>
+          {members.filter(m => m.id !== member.id).map(m => (
+            <button key={m.id} onClick={() => setActiveThreadWith(m)} className="w-full flex items-center gap-3 py-3 text-left" style={{ borderTop: `1px solid ${C.line}` }}>
+              <div className="w-10 h-10 rounded-full flex items-center justify-center text-xs shrink-0" style={{ background: C.purple, color: C.gold, ...serif }}>
+                {m.name.split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase()}
+              </div>
+              <div className="flex-1">
+                <div className="text-sm" style={{ color: C.ink, ...sans }}>{m.name}</div>
+                <div className="text-xs" style={{ color: C.inkSoft, ...sans }}>{m.role}</div>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function GroupsList({ me, members, onOpen }) {
+  const [groups, setGroups] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showCreate, setShowCreate] = useState(false);
+
+  const load = () => supabase
+    .from("groups")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .then(({ data }) => { setGroups(data ?? []); setLoading(false); });
+
+  useEffect(() => { load(); }, []); // eslint-disable-line
+
+  const createGroup = async (name, memberIds) => {
+    const { data: group, error } = await supabase.from("groups").insert({ name, created_by: me.id }).select().single();
+    if (error || !group) { alert(error?.message || "Could not create group"); return; }
+    const rows = [me.id, ...memberIds.filter(id => id !== me.id)].map(member_id => ({ group_id: group.id, member_id }));
+    await supabase.from("group_members").insert(rows);
+    setShowCreate(false);
+    load();
+  };
+
+  return (
+    <div>
+      <button onClick={() => setShowCreate(true)} className="w-full py-2.5 mb-4 rounded-sm text-sm flex items-center justify-center gap-1" style={{ background: C.purple, color: C.ivory, ...sans }}>
+        <Plus size={14} /> New Group
+      </button>
+
+      {loading && <div className="text-xs" style={{ color: C.inkSoft, ...sans }}>Loading…</div>}
+      {!loading && groups.length === 0 && <div className="text-xs" style={{ color: C.inkSoft, ...sans }}>No groups yet — create one for a committee or board.</div>}
+      {groups.map(g => (
+        <button key={g.id} onClick={() => onOpen(g)} className="w-full flex items-center gap-3 py-3 text-left" style={{ borderTop: `1px solid ${C.line}` }}>
+          <div className="w-10 h-10 rounded-sm flex items-center justify-center text-xs shrink-0" style={{ background: C.purple, color: C.gold, ...serif }}>
+            {g.name.slice(0, 2).toUpperCase()}
+          </div>
+          <div className="text-sm" style={{ color: C.ink, ...sans }}>{g.name}</div>
+        </button>
+      ))}
+
+      {showCreate && <CreateGroupModal members={members} onClose={() => setShowCreate(false)} onCreate={createGroup} />}
+    </div>
+  );
+}
+
+function CreateGroupModal({ members, onClose, onCreate }) {
+  const [name, setName] = useState("");
+  const [selected, setSelected] = useState(new Set());
+
+  const toggle = (id) => {
+    const next = new Set(selected);
+    next.has(id) ? next.delete(id) : next.add(id);
+    setSelected(next);
+  };
+
+  return (
+    <div className="absolute inset-0 z-30 flex items-end" style={{ background: "rgba(36,21,54,0.55)" }}>
+      <div className="w-full rounded-t-2xl p-5" style={{ background: "#fff", maxHeight: "80%", overflowY: "auto" }}>
+        <div className="flex items-center justify-between mb-4">
+          <div className="text-lg" style={{ ...serif, color: C.ink }}>New Group</div>
+          <button onClick={onClose}><X size={18} color={C.inkSoft} /></button>
+        </div>
+        <label className="text-xs" style={{ color: C.inkSoft, ...sans }}>Group name</label>
+        <input value={name} onChange={e => setName(e.target.value)} className="w-full mt-1 mb-4 px-3 py-2 rounded-sm text-sm" style={{ border: `1px solid ${C.line}`, ...sans }} placeholder="e.g. Exec Board" />
+
+        <label className="text-xs mb-2 block" style={{ color: C.inkSoft, ...sans }}>Add members</label>
+        {members.map(m => (
+          <label key={m.id} className="flex items-center gap-2 py-2" style={{ borderTop: `1px solid ${C.line}` }}>
+            <input type="checkbox" checked={selected.has(m.id)} onChange={() => toggle(m.id)} />
+            <span className="text-sm" style={{ color: C.ink, ...sans }}>{m.name}</span>
+          </label>
+        ))}
+
+        <button
+          disabled={!name.trim()}
+          onClick={() => onCreate(name, Array.from(selected))}
+          className="w-full py-3 mt-4 rounded-sm font-medium disabled:opacity-40"
+          style={{ background: C.purple, color: C.ivory, ...sans }}
+        >
+          Create Group
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function GroupThread({ me, group, members, onBack }) {
+  const [messages, setMessages] = useState([]);
+  const [groupMembers, setGroupMembers] = useState([]);
+  const [text, setText] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [showAdd, setShowAdd] = useState(false);
+
+  const loadMessages = () => supabase
+    .from("group_messages")
+    .select("*, members(name)")
+    .eq("group_id", group.id)
+    .order("created_at", { ascending: true })
+    .then(({ data }) => { setMessages(data ?? []); setLoading(false); });
+
+  const loadMembers = () => supabase
+    .from("group_members")
+    .select("member_id")
+    .eq("group_id", group.id)
+    .then(({ data }) => setGroupMembers((data ?? []).map(r => r.member_id)));
+
+  useEffect(() => { loadMessages(); loadMembers(); }, []); // eslint-disable-line
+
+  const send = async () => {
+    if (!text.trim()) return;
+    const body = text;
+    setText("");
+    await supabase.from("group_messages").insert({ group_id: group.id, sender_id: me.id, body });
+    loadMessages();
+  };
+
+  const addMembers = async (memberIds) => {
+    const rows = memberIds.map(member_id => ({ group_id: group.id, member_id }));
+    await supabase.from("group_members").insert(rows);
+    setShowAdd(false);
+    loadMembers();
+  };
+
+  const notInGroup = members.filter(m => !groupMembers.includes(m.id));
+
+  return (
+    <div className="px-5">
+      <div className="flex items-center justify-between pb-4 mb-3" style={{ borderBottom: `1px solid ${C.line}` }}>
+        <div className="flex items-center gap-2">
+          <button onClick={onBack}><ArrowLeft size={18} color={C.inkSoft} /></button>
+          <div>
+            <div className="text-lg" style={{ ...serif, color: C.ink }}>{group.name}</div>
+            <div className="text-xs" style={{ color: C.inkSoft, ...sans }}>{groupMembers.length} members</div>
+          </div>
+        </div>
+        <button onClick={() => setShowAdd(true)} className="w-7 h-7 rounded-full flex items-center justify-center" style={{ background: C.purple }}>
+          <Plus size={14} color={C.ivory} />
+        </button>
+      </div>
+
+      <div className="mb-3" style={{ maxHeight: 420, overflowY: "auto" }}>
+        {loading && <div className="text-xs" style={{ color: C.inkSoft, ...sans }}>Loading…</div>}
+        {!loading && messages.length === 0 && <div className="text-xs" style={{ color: C.inkSoft, ...sans }}>No messages yet — say something.</div>}
+        {messages.map(m => {
+          const mine = m.sender_id === me.id;
+          return (
+            <div key={m.id} className="mb-2" style={{ textAlign: mine ? "right" : "left" }}>
+              {!mine && <div className="text-[10px] mb-0.5" style={{ color: C.inkSoft, ...sans }}>{m.members?.name ?? "Member"}</div>}
+              <div className="inline-block px-3 py-2 rounded-sm text-sm max-w-[85%]" style={mine ? { background: C.purple, color: C.ivory, ...sans } : { background: "#fff", border: `1px solid ${C.line}`, color: C.ink, ...sans }}>
+                {m.body}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="flex gap-2">
+        <input
+          value={text}
+          onChange={e => setText(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && send()}
+          placeholder={`Message ${group.name}…`}
+          className="flex-1 px-3 py-2 rounded-sm text-sm"
+          style={{ border: `1px solid ${C.line}`, ...sans }}
+        />
+        <button onClick={send} disabled={!text.trim()} className="w-10 h-10 rounded-sm flex items-center justify-center disabled:opacity-40" style={{ background: C.purple }}>
+          <Send size={16} color={C.ivory} />
+        </button>
+      </div>
+
+      {showAdd && (
+        <div className="absolute inset-0 z-30 flex items-end" style={{ background: "rgba(36,21,54,0.55)" }}>
+          <AddToGroupModal candidates={notInGroup} onClose={() => setShowAdd(false)} onAdd={addMembers} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AddToGroupModal({ candidates, onClose, onAdd }) {
+  const [selected, setSelected] = useState(new Set());
+  const toggle = (id) => {
+    const next = new Set(selected);
+    next.has(id) ? next.delete(id) : next.add(id);
+    setSelected(next);
+  };
+  return (
+    <div className="w-full rounded-t-2xl p-5" style={{ background: "#fff", maxHeight: "80%", overflowY: "auto" }}>
+      <div className="flex items-center justify-between mb-4">
+        <div className="text-lg" style={{ ...serif, color: C.ink }}>Add to Group</div>
+        <button onClick={onClose}><X size={18} color={C.inkSoft} /></button>
+      </div>
+      {candidates.length === 0 && <div className="text-xs" style={{ color: C.inkSoft, ...sans }}>Everyone's already in this group.</div>}
+      {candidates.map(m => (
+        <label key={m.id} className="flex items-center gap-2 py-2" style={{ borderTop: `1px solid ${C.line}` }}>
+          <input type="checkbox" checked={selected.has(m.id)} onChange={() => toggle(m.id)} />
+          <span className="text-sm" style={{ color: C.ink, ...sans }}>{m.name}</span>
+        </label>
+      ))}
+      <button
+        disabled={selected.size === 0}
+        onClick={() => onAdd(Array.from(selected))}
+        className="w-full py-3 mt-4 rounded-sm font-medium disabled:opacity-40"
+        style={{ background: C.purple, color: C.ivory, ...sans }}
+      >
+        Add Selected
+      </button>
+    </div>
+  );
+}
+
+function ChapterChat({ me }) {
+  const [messages, setMessages] = useState([]);
+  const [text, setText] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  const load = () => supabase
+    .from("chapter_messages")
+    .select("*, members(name)")
+    .order("created_at", { ascending: true })
+    .then(({ data }) => { setMessages(data ?? []); setLoading(false); });
+
+  useEffect(() => { load(); }, []); // eslint-disable-line
+
+  const send = async () => {
+    if (!text.trim()) return;
+    const body = text;
+    setText("");
+    await supabase.from("chapter_messages").insert({ sender_id: me.id, body });
+    load();
+  };
+
+  return (
+    <div>
+      <div className="mb-3" style={{ maxHeight: 420, overflowY: "auto" }}>
+        {loading && <div className="text-xs" style={{ color: C.inkSoft, ...sans }}>Loading…</div>}
+        {!loading && messages.length === 0 && <div className="text-xs" style={{ color: C.inkSoft, ...sans }}>No messages yet — say something.</div>}
+        {messages.map(m => {
+          const mine = m.sender_id === me.id;
+          return (
+            <div key={m.id} className="mb-2" style={{ textAlign: mine ? "right" : "left" }}>
+              {!mine && <div className="text-[10px] mb-0.5" style={{ color: C.inkSoft, ...sans }}>{m.members?.name ?? "Member"}</div>}
+              <div
+                className="inline-block px-3 py-2 rounded-sm text-sm max-w-[85%]"
+                style={mine ? { background: C.purple, color: C.ivory, ...sans } : { background: "#fff", border: `1px solid ${C.line}`, color: C.ink, ...sans }}
+              >
+                {m.body}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="flex gap-2">
+        <input
+          value={text}
+          onChange={e => setText(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && send()}
+          placeholder="Message the chapter…"
+          className="flex-1 px-3 py-2 rounded-sm text-sm"
+          style={{ border: `1px solid ${C.line}`, ...sans }}
+        />
+        <button onClick={send} disabled={!text.trim()} className="w-10 h-10 rounded-sm flex items-center justify-center disabled:opacity-40" style={{ background: C.purple }}>
+          <Send size={16} color={C.ivory} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function DirectThread({ me, other, onBack }) {
+  const [messages, setMessages] = useState([]);
+  const [text, setText] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  const load = () => supabase
+    .from("direct_messages")
+    .select("*")
+    .or(`and(sender_id.eq.${me.id},recipient_id.eq.${other.id}),and(sender_id.eq.${other.id},recipient_id.eq.${me.id})`)
+    .order("created_at", { ascending: true })
+    .then(({ data }) => { setMessages(data ?? []); setLoading(false); });
+
+  useEffect(() => { load(); }, []); // eslint-disable-line
+
+  const send = async () => {
+    if (!text.trim()) return;
+    const body = text;
+    setText("");
+    await supabase.from("direct_messages").insert({ sender_id: me.id, recipient_id: other.id, body });
+    load();
+  };
+
+  return (
+    <div className="px-5">
+      <div className="flex items-center gap-2 pb-4 mb-3" style={{ borderBottom: `1px solid ${C.line}` }}>
+        <button onClick={onBack}><ArrowLeft size={18} color={C.inkSoft} /></button>
+        <div className="text-lg" style={{ ...serif, color: C.ink }}>{other.name}</div>
+      </div>
+
+      <div className="mb-3" style={{ maxHeight: 460, overflowY: "auto" }}>
+        {loading && <div className="text-xs" style={{ color: C.inkSoft, ...sans }}>Loading…</div>}
+        {!loading && messages.length === 0 && <div className="text-xs" style={{ color: C.inkSoft, ...sans }}>No messages yet.</div>}
+        {messages.map(m => {
+          const mine = m.sender_id === me.id;
+          return (
+            <div key={m.id} className="mb-2" style={{ textAlign: mine ? "right" : "left" }}>
+              <div
+                className="inline-block px-3 py-2 rounded-sm text-sm max-w-[85%]"
+                style={mine ? { background: C.purple, color: C.ivory, ...sans } : { background: "#fff", border: `1px solid ${C.line}`, color: C.ink, ...sans }}
+              >
+                {m.body}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="flex gap-2">
+        <input
+          value={text}
+          onChange={e => setText(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && send()}
+          placeholder={`Message ${other.name.split(" ")[0]}…`}
+          className="flex-1 px-3 py-2 rounded-sm text-sm"
+          style={{ border: `1px solid ${C.line}`, ...sans }}
+        />
+        <button onClick={send} disabled={!text.trim()} className="w-10 h-10 rounded-sm flex items-center justify-center disabled:opacity-40" style={{ background: C.purple }}>
+          <Send size={16} color={C.ivory} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ---- Nav / Modals ----
 
 function TabBar({ tab, setTab, member }) {
@@ -567,23 +949,24 @@ function TabBar({ tab, setTab, member }) {
     { id: "events", icon: CalendarDays, label: "Events" },
     { id: "members", icon: Users, label: "Members" },
     { id: "dues", icon: CircleDollarSign, label: "Dues" },
+    { id: "messages", icon: MessageCircle, label: "Messages" },
     { id: "feed", icon: Images, label: "Feed" },
   ];
   return (
-    <div className="flex items-center justify-around py-2.5" style={{ borderTop: `1px solid ${C.line}`, background: "#fff" }}>
+    <div className="flex items-center justify-around py-2" style={{ borderTop: `1px solid ${C.line}`, background: "#fff" }}>
       {items.map(it => {
         const Icon = it.icon;
         const active = tab === it.id;
         return (
-          <button key={it.id} onClick={() => setTab(it.id)} className="flex flex-col items-center gap-0.5 px-2">
-            <Icon size={19} color={active ? C.purple : C.inkSoft} strokeWidth={active ? 2.4 : 1.8} />
-            <span className="text-[10px]" style={{ color: active ? C.purple : C.inkSoft, ...sans }}>{it.label}</span>
+          <button key={it.id} onClick={() => setTab(it.id)} className="flex flex-col items-center gap-0.5 px-1">
+            <Icon size={17} color={active ? C.purple : C.inkSoft} strokeWidth={active ? 2.4 : 1.8} />
+            <span className="text-[9px]" style={{ color: active ? C.purple : C.inkSoft, ...sans }}>{it.label}</span>
           </button>
         );
       })}
-      <button onClick={() => supabase.auth.signOut()} className="flex flex-col items-center gap-0.5 px-2">
-        <LogOut size={19} color={C.inkSoft} strokeWidth={1.8} />
-        <span className="text-[10px]" style={{ color: C.inkSoft, ...sans }}>Sign out</span>
+      <button onClick={() => supabase.auth.signOut()} className="flex flex-col items-center gap-0.5 px-1">
+        <LogOut size={17} color={C.inkSoft} strokeWidth={1.8} />
+        <span className="text-[9px]" style={{ color: C.inkSoft, ...sans }}>Sign out</span>
       </button>
     </div>
   );
