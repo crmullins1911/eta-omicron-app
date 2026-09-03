@@ -126,7 +126,7 @@ function LoginScreen() {
       <div className="w-full h-px mb-8" style={{ background: C.purpleSoft }} />
 
       <div className="text-sm mb-4" style={{ color: "#D9CDEC", ...sans }}>
-        {mode === "signin" && "Sign in with the email your officer added you with."}
+        {mode === "signin" && "Sign in with the email your Admin added you with."}
         {mode === "signup" && "First time here? Set a password for that email."}
         {mode === "forgot" && "Enter your email and we'll send a reset link."}
       </div>
