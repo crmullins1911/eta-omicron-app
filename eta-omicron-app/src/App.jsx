@@ -26,11 +26,15 @@ export default function App() {
   const [member, setMember] = useState(null);
   const [memberLookupDone, setMemberLookupDone] = useState(false);
   const [tab, setTab] = useState("home");
+  const [recoveryMode, setRecoveryMode] = useState(false);
 
   // Watch auth state
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => setSession(s));
+    const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
+      if (event === "PASSWORD_RECOVERY") setRecoveryMode(true);
+      setSession(s);
+    });
     return () => sub.subscription.unsubscribe();
   }, []);
 
@@ -49,6 +53,7 @@ export default function App() {
       });
   }, [session]);
 
+  if (recoveryMode) return <Frame><ResetPasswordScreen onDone={() => setRecoveryMode(false)} /></Frame>;
   if (!session) return <Frame><LoginScreen /></Frame>;
   if (!memberLookupDone) return <Frame><CenteredNote text="Loading…" /></Frame>;
   if (!member) return <Frame><NotAMemberScreen email={session.user.email} /></Frame>;
@@ -78,7 +83,7 @@ function CenteredNote({ text }) {
 // ---- Auth ----
 
 function LoginScreen() {
-  const [mode, setMode] = useState("signin"); // "signin" | "signup"
+  const [mode, setMode] = useState("signin"); // "signin" | "signup" | "forgot"
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -90,10 +95,16 @@ function LoginScreen() {
     if (mode === "signin") {
       const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) setError(error.message);
-    } else {
+    } else if (mode === "signup") {
       const { error } = await supabase.auth.signUp({ email, password });
       if (error) setError(error.message);
       else setInfo("Password set. If your project requires email confirmation, check your inbox once — after that, just sign in with your password below.");
+    } else if (mode === "forgot") {
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: window.location.origin,
+      });
+      if (error) setError(error.message);
+      else setInfo("Check your email for a link to reset your password.");
     }
     setBusy(false);
   };
@@ -106,9 +117,9 @@ function LoginScreen() {
       <div className="w-full h-px mb-8" style={{ background: C.purpleSoft }} />
 
       <div className="text-sm mb-4" style={{ color: "#D9CDEC", ...sans }}>
-        {mode === "signin"
-          ? "Sign in with the email your officer added you with."
-          : "First time here? Set a password for that email."}
+        {mode === "signin" && "Sign in with the email your officer added you with."}
+        {mode === "signup" && "First time here? Set a password for that email."}
+        {mode === "forgot" && "Enter your email and we'll send a reset link."}
       </div>
 
       <input
@@ -119,34 +130,95 @@ function LoginScreen() {
         className="w-full px-3 py-3 mb-3 rounded-sm text-sm"
         style={{ ...sans }}
       />
-      <input
-        type="password"
-        value={password}
-        onChange={e => setPassword(e.target.value)}
-        placeholder={mode === "signup" ? "Create a password" : "Password"}
-        className="w-full px-3 py-3 mb-3 rounded-sm text-sm"
-        style={{ ...sans }}
-      />
+      {mode !== "forgot" && (
+        <input
+          type="password"
+          value={password}
+          onChange={e => setPassword(e.target.value)}
+          placeholder={mode === "signup" ? "Create a password" : "Password"}
+          className="w-full px-3 py-3 mb-3 rounded-sm text-sm"
+          style={{ ...sans }}
+        />
+      )}
 
       <button
         onClick={submit}
-        disabled={!email || !password || busy}
+        disabled={!email || (mode !== "forgot" && !password) || busy}
         className="w-full py-3 mb-3 rounded-sm font-medium disabled:opacity-40"
         style={{ background: C.gold, color: C.purpleDeep, ...sans }}
       >
-        {busy ? "Please wait…" : mode === "signin" ? "Sign In" : "Create Password"}
+        {busy ? "Please wait…" : mode === "signin" ? "Sign In" : mode === "signup" ? "Create Password" : "Send Reset Link"}
       </button>
 
-      <button
-        onClick={() => { setMode(mode === "signin" ? "signup" : "signin"); setError(""); setInfo(""); }}
-        className="text-xs"
-        style={{ color: C.goldSoft, ...sans }}
-      >
-        {mode === "signin" ? "First time here? Set a password" : "Already set a password? Sign in"}
-      </button>
+      <div className="flex flex-col gap-2">
+        {mode === "signin" && (
+          <>
+            <button onClick={() => { setMode("signup"); setError(""); setInfo(""); }} className="text-xs" style={{ color: C.goldSoft, ...sans }}>
+              First time here? Set a password
+            </button>
+            <button onClick={() => { setMode("forgot"); setError(""); setInfo(""); }} className="text-xs" style={{ color: "#B9A9D6", ...sans }}>
+              Forgot password?
+            </button>
+          </>
+        )}
+        {mode !== "signin" && (
+          <button onClick={() => { setMode("signin"); setError(""); setInfo(""); }} className="text-xs" style={{ color: C.goldSoft, ...sans }}>
+            Back to sign in
+          </button>
+        )}
+      </div>
 
       {error && <div className="text-xs mt-4" style={{ color: "#E6A5A5" }}>{error}</div>}
       {info && <div className="text-xs mt-4" style={{ color: "#B9DCC3" }}>{info}</div>}
+    </div>
+  );
+}
+
+function ResetPasswordScreen({ onDone }) {
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [done, setDone] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    setError(""); setBusy(true);
+    const { error } = await supabase.auth.updateUser({ password });
+    setBusy(false);
+    if (error) setError(error.message);
+    else setDone(true);
+  };
+
+  return (
+    <div className="h-full flex flex-col items-center justify-center px-8 text-center" style={{ background: `linear-gradient(180deg, ${C.purpleDeep} 0%, ${C.purple} 100%)` }}>
+      <div className="text-2xl mb-6" style={{ color: C.ivory, ...serif }}>Set a New Password</div>
+      {done ? (
+        <>
+          <div className="text-sm mb-5" style={{ color: "#B9DCC3", ...sans }}>Password updated.</div>
+          <button onClick={onDone} className="w-full py-3 rounded-sm font-medium" style={{ background: C.gold, color: C.purpleDeep, ...sans }}>
+            Continue
+          </button>
+        </>
+      ) : (
+        <>
+          <input
+            type="password"
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            placeholder="New password"
+            className="w-full px-3 py-3 mb-3 rounded-sm text-sm"
+            style={{ ...sans }}
+          />
+          <button
+            onClick={submit}
+            disabled={!password || busy}
+            className="w-full py-3 rounded-sm font-medium disabled:opacity-40"
+            style={{ background: C.gold, color: C.purpleDeep, ...sans }}
+          >
+            {busy ? "Saving…" : "Save New Password"}
+          </button>
+          {error && <div className="text-xs mt-4" style={{ color: "#E6A5A5" }}>{error}</div>}
+        </>
+      )}
     </div>
   );
 }
