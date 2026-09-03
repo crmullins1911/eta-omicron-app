@@ -533,7 +533,7 @@ function TabBar({ tab, setTab, member }) {
       })}
       <button onClick={() => supabase.auth.signOut()} className="flex flex-col items-center gap-0.5 px-2">
         <LogOut size={19} color={C.inkSoft} strokeWidth={1.8} />
-        <span className="text-[10px]" style={{ color: C.inkSoft, ...sans }}>{member.is_officer ? "Officer" : "Sign out"}</span>
+        <span className="text-[10px]" style={{ color: C.inkSoft, ...sans }}>Sign out</span>
       </button>
     </div>
   );
