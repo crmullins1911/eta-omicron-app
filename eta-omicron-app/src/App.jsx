@@ -78,15 +78,24 @@ function CenteredNote({ text }) {
 // ---- Auth ----
 
 function LoginScreen() {
+  const [mode, setMode] = useState("signin"); // "signin" | "signup"
   const [email, setEmail] = useState("");
-  const [sent, setSent] = useState(false);
+  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [info, setInfo] = useState("");
+  const [busy, setBusy] = useState(false);
 
-  const sendLink = async () => {
-    setError("");
-    const { error } = await supabase.auth.signInWithOtp({ email });
-    if (error) setError(error.message);
-    else setSent(true);
+  const submit = async () => {
+    setError(""); setInfo(""); setBusy(true);
+    if (mode === "signin") {
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) setError(error.message);
+    } else {
+      const { error } = await supabase.auth.signUp({ email, password });
+      if (error) setError(error.message);
+      else setInfo("Password set. If your project requires email confirmation, check your inbox once — after that, just sign in with your password below.");
+    }
+    setBusy(false);
   };
 
   return (
@@ -96,34 +105,48 @@ function LoginScreen() {
       <div className="text-2xl mb-8" style={{ color: C.ivory, ...serif }}>Eta Omicron Chapter</div>
       <div className="w-full h-px mb-8" style={{ background: C.purpleSoft }} />
 
-      {sent ? (
-        <div className="text-sm" style={{ color: "#D9CDEC", ...sans }}>
-          Check <b style={{ color: C.ivory }}>{email}</b> for a sign-in link.
-        </div>
-      ) : (
-        <>
-          <div className="text-sm mb-4" style={{ color: "#D9CDEC", ...sans }}>
-            Sign in with the email your officer added you with.
-          </div>
-          <input
-            type="email"
-            value={email}
-            onChange={e => setEmail(e.target.value)}
-            placeholder="you@example.com"
-            className="w-full px-3 py-3 mb-3 rounded-sm text-sm"
-            style={{ ...sans }}
-          />
-          <button
-            onClick={sendLink}
-            disabled={!email}
-            className="w-full py-3 rounded-sm font-medium disabled:opacity-40"
-            style={{ background: C.gold, color: C.purpleDeep, ...sans }}
-          >
-            Send sign-in link
-          </button>
-          {error && <div className="text-xs mt-3" style={{ color: "#E6A5A5" }}>{error}</div>}
-        </>
-      )}
+      <div className="text-sm mb-4" style={{ color: "#D9CDEC", ...sans }}>
+        {mode === "signin"
+          ? "Sign in with the email your officer added you with."
+          : "First time here? Set a password for that email."}
+      </div>
+
+      <input
+        type="email"
+        value={email}
+        onChange={e => setEmail(e.target.value)}
+        placeholder="you@example.com"
+        className="w-full px-3 py-3 mb-3 rounded-sm text-sm"
+        style={{ ...sans }}
+      />
+      <input
+        type="password"
+        value={password}
+        onChange={e => setPassword(e.target.value)}
+        placeholder={mode === "signup" ? "Create a password" : "Password"}
+        className="w-full px-3 py-3 mb-3 rounded-sm text-sm"
+        style={{ ...sans }}
+      />
+
+      <button
+        onClick={submit}
+        disabled={!email || !password || busy}
+        className="w-full py-3 mb-3 rounded-sm font-medium disabled:opacity-40"
+        style={{ background: C.gold, color: C.purpleDeep, ...sans }}
+      >
+        {busy ? "Please wait…" : mode === "signin" ? "Sign In" : "Create Password"}
+      </button>
+
+      <button
+        onClick={() => { setMode(mode === "signin" ? "signup" : "signin"); setError(""); setInfo(""); }}
+        className="text-xs"
+        style={{ color: C.goldSoft, ...sans }}
+      >
+        {mode === "signin" ? "First time here? Set a password" : "Already set a password? Sign in"}
+      </button>
+
+      {error && <div className="text-xs mt-4" style={{ color: "#E6A5A5" }}>{error}</div>}
+      {info && <div className="text-xs mt-4" style={{ color: "#B9DCC3" }}>{info}</div>}
     </div>
   );
 }
