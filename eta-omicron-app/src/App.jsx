@@ -243,7 +243,9 @@ function AppShell({ member, tab, setTab }) {
   const [events, setEvents] = useState([]);
   const [rsvpIds, setRsvpIds] = useState(new Set());
   const [feed, setFeed] = useState([]);
+  const [duesPaidIds, setDuesPaidIds] = useState(new Set());
   const [showAddMember, setShowAddMember] = useState(false);
+  const currentYear = new Date().getFullYear();
 
   const loadMembers = () => supabase.from("members").select("*").order("name").then(({ data }) => setMembers(data ?? []));
   const loadEvents = () => supabase.from("events").select("*").order("event_date").then(({ data }) => setEvents(data ?? []));
@@ -251,8 +253,10 @@ function AppShell({ member, tab, setTab }) {
     .then(({ data }) => setRsvpIds(new Set((data ?? []).map(r => r.event_id))));
   const loadFeed = () => supabase.from("posts").select("*, members(name)").order("created_at", { ascending: false })
     .then(({ data }) => setFeed(data ?? []));
+  const loadDues = () => supabase.from("dues_payments").select("member_id").eq("year", currentYear)
+    .then(({ data }) => setDuesPaidIds(new Set((data ?? []).map(d => d.member_id))));
 
-  useEffect(() => { loadMembers(); loadEvents(); loadRsvps(); loadFeed(); }, []); // eslint-disable-line
+  useEffect(() => { loadMembers(); loadEvents(); loadRsvps(); loadFeed(); loadDues(); }, []); // eslint-disable-line
 
   const toggleRsvp = async (eventId) => {
     if (rsvpIds.has(eventId)) {
@@ -290,10 +294,18 @@ function AppShell({ member, tab, setTab }) {
         {tab === "home" && <HomeScreen member={member} events={events} />}
         {tab === "events" && <EventsScreen events={events} rsvpIds={rsvpIds} toggleRsvp={toggleRsvp} />}
         {tab === "members" && (
-          <MembersScreen members={members} isOfficer={member.is_officer} onAdd={() => setShowAddMember(true)} />
+          <MembersScreen members={members} isOfficer={member.is_officer} duesPaidIds={duesPaidIds} onAdd={() => setShowAddMember(true)} />
         )}
         {tab === "dues" && (
-          <DuesScreen isOfficer={member.is_officer} members={members} me={members.find(m => m.id === member.id) ?? member} onPay={payDues} />
+          <DuesScreen
+            isOfficer={member.is_officer}
+            members={members}
+            duesPaidIds={duesPaidIds}
+            year={currentYear}
+            meId={member.id}
+            meDuesAmount={member.dues_amount ?? 75}
+            onPay={payDues}
+          />
         )}
         {tab === "feed" && <FeedScreen feed={feed} onAddPost={addPost} />}
       </div>
@@ -377,7 +389,7 @@ function EventsScreen({ events, rsvpIds, toggleRsvp }) {
   );
 }
 
-function MembersScreen({ members, isOfficer, onAdd }) {
+function MembersScreen({ members, isOfficer, duesPaidIds, onAdd }) {
   return (
     <div className="px-5">
       <ScreenHeader
@@ -389,45 +401,50 @@ function MembersScreen({ members, isOfficer, onAdd }) {
           </button>
         )}
       />
-      {members.map(m => (
-        <div key={m.id} className="flex items-center gap-3 py-3" style={{ borderTop: `1px solid ${C.line}` }}>
-          <div className="w-10 h-10 rounded-full flex items-center justify-center text-xs shrink-0" style={{ background: C.purple, color: C.gold, ...serif }}>
-            {m.name.split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase()}
-          </div>
-          <div className="flex-1">
-            <div className="text-sm" style={{ color: C.ink, ...sans }}>{m.name}</div>
-            <div className="text-xs" style={{ color: C.inkSoft, ...sans }}>{m.role}{m.line ? ` · ${m.line}` : ""}</div>
-          </div>
-          {isOfficer && (
-            <div className="text-[10px] px-2 py-1 rounded-sm" style={m.dues_paid
-              ? { background: "#EAF2EC", color: C.green, ...sans }
-              : { background: "#F7E9E4", color: "#A15A3C", ...sans }}>
-              {m.dues_paid ? "PAID" : "UNPAID"}
+      {members.map(m => {
+        const paid = duesPaidIds?.has(m.id);
+        return (
+          <div key={m.id} className="flex items-center gap-3 py-3" style={{ borderTop: `1px solid ${C.line}` }}>
+            <div className="w-10 h-10 rounded-full flex items-center justify-center text-xs shrink-0" style={{ background: C.purple, color: C.gold, ...serif }}>
+              {m.name.split(" ").map(w => w[0]).join("").slice(0, 2).toUpperCase()}
             </div>
-          )}
-        </div>
-      ))}
+            <div className="flex-1">
+              <div className="text-sm" style={{ color: C.ink, ...sans }}>{m.name}</div>
+              <div className="text-xs" style={{ color: C.inkSoft, ...sans }}>{m.role}{m.line ? ` · ${m.line}` : ""}</div>
+            </div>
+            {isOfficer && (
+              <div className="text-[10px] px-2 py-1 rounded-sm" style={paid
+                ? { background: "#EAF2EC", color: C.green, ...sans }
+                : { background: "#F7E9E4", color: "#A15A3C", ...sans }}>
+                {paid ? "PAID" : "UNPAID"}
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
 
-function DuesScreen({ isOfficer, members, me, onPay }) {
+function DuesScreen({ isOfficer, members, duesPaidIds, year, meId, meDuesAmount, onPay }) {
+  const meIsPaid = duesPaidIds.has(meId);
+
   if (isOfficer) {
-    const paid = members.filter(m => m.dues_paid).length;
-    const total = members.reduce((sum, m) => sum + (m.dues_paid ? Number(m.dues_amount ?? 75) : 0), 0);
+    const paidCount = members.filter(m => duesPaidIds.has(m.id)).length;
+    const total = paidCount * Number(meDuesAmount ?? 75);
     return (
       <div className="px-5">
-        <ScreenHeader title="Dues" subtitle="Chapter-wide status" />
+        <ScreenHeader title="Dues" subtitle={`${year} — Chapter-wide status`} />
 
         <div className="rounded-sm p-4 mb-5" style={{ background: C.purple }}>
-          <div className="text-xs mb-1" style={{ color: C.goldSoft, ...sans, letterSpacing: "0.1em" }}>YOUR DUES</div>
-          {me.dues_paid ? (
+          <div className="text-xs mb-1" style={{ color: C.goldSoft, ...sans, letterSpacing: "0.1em" }}>YOUR DUES — {year}</div>
+          {meIsPaid ? (
             <div className="flex items-center gap-1 text-sm" style={{ color: "#B9DCC3", ...sans }}>
-              <Check size={14} /> Paid for this term
+              <Check size={14} /> Paid for {year}
             </div>
           ) : (
             <>
-              <div className="text-2xl mb-2" style={{ color: C.ivory, ...serif }}>${Number(me.dues_amount ?? 75).toFixed(2)} due</div>
+              <div className="text-2xl mb-2" style={{ color: C.ivory, ...serif }}>${Number(meDuesAmount ?? 75).toFixed(2)} due</div>
               <button onClick={onPay} className="w-full py-2.5 rounded-sm font-medium text-sm" style={{ background: C.gold, color: C.purpleDeep, ...sans }}>
                 Pay Dues
               </button>
@@ -435,42 +452,48 @@ function DuesScreen({ isOfficer, members, me, onPay }) {
           )}
         </div>
 
-        <div className="text-xs mb-2" style={{ color: C.inkSoft, ...sans, letterSpacing: "0.08em" }}>CHAPTER-WIDE</div>
+        <div className="text-xs mb-2" style={{ color: C.inkSoft, ...sans, letterSpacing: "0.08em" }}>CHAPTER-WIDE — {year}</div>
         <div className="flex gap-3 mb-5">
-          <StatBlock label="Paid" value={paid} />
-          <StatBlock label="Unpaid" value={members.length - paid} />
-          <StatBlock label="Collected" value={`$${total.toFixed(0)}`} />
+          <StatBlock label="Paid" value={paidCount} />
+          <StatBlock label="Unpaid" value={members.length - paidCount} />
+          <StatBlock label="Collected" value={`~$${total.toFixed(0)}`} />
         </div>
-        {members.map(m => (
-          <div key={m.id} className="flex items-center justify-between py-3" style={{ borderTop: `1px solid ${C.line}` }}>
-            <div>
-              <div className="text-sm" style={{ color: C.ink, ...sans }}>{m.name}</div>
-              <div className="text-xs" style={{ color: C.inkSoft, ...sans }}>{m.role}</div>
+        {members.map(m => {
+          const paid = duesPaidIds.has(m.id);
+          return (
+            <div key={m.id} className="flex items-center justify-between py-3" style={{ borderTop: `1px solid ${C.line}` }}>
+              <div>
+                <div className="text-sm" style={{ color: C.ink, ...sans }}>{m.name}</div>
+                <div className="text-xs" style={{ color: C.inkSoft, ...sans }}>{m.role}</div>
+              </div>
+              <div className="text-xs px-2 py-1 rounded-sm" style={paid
+                ? { background: "#EAF2EC", color: C.green, ...sans }
+                : { background: "#F7E9E4", color: "#A15A3C", ...sans }}>
+                {paid ? "Paid" : "Unpaid"}
+              </div>
             </div>
-            <div className="text-xs px-2 py-1 rounded-sm" style={m.dues_paid
-              ? { background: "#EAF2EC", color: C.green, ...sans }
-              : { background: "#F7E9E4", color: "#A15A3C", ...sans }}>
-              {m.dues_paid ? "Paid" : "Unpaid"}
-            </div>
-          </div>
-        ))}
+          );
+        })}
+        <div className="text-xs mt-4 leading-relaxed" style={{ color: C.inkSoft, ...sans }}>
+          Dues are tracked per calendar year — everyone starts back at "unpaid" automatically each January, with prior years kept on record.
+        </div>
       </div>
     );
   }
 
   return (
     <div className="px-5">
-      <ScreenHeader title="Dues" subtitle="Current term" />
+      <ScreenHeader title="Dues" subtitle={`${year}`} />
       <div className="rounded-sm p-5 text-center" style={{ background: C.purple }}>
-        <div className="text-xs mb-2" style={{ color: C.goldSoft, ...sans, letterSpacing: "0.1em" }}>AMOUNT DUE</div>
-        <div className="text-4xl mb-1" style={{ color: C.ivory, ...serif }}>{me.dues_paid ? "$0" : `$${Number(me.dues_amount ?? 75).toFixed(2)}`}</div>
-        <div className="text-xs mb-5" style={{ color: "#D9CDEC", ...sans }}>{me.dues_paid ? "You're all set for this term." : "Pay securely via Stripe."}</div>
-        {!me.dues_paid && (
+        <div className="text-xs mb-2" style={{ color: C.goldSoft, ...sans, letterSpacing: "0.1em" }}>AMOUNT DUE — {year}</div>
+        <div className="text-4xl mb-1" style={{ color: C.ivory, ...serif }}>{meIsPaid ? "$0" : `$${Number(meDuesAmount ?? 75).toFixed(2)}`}</div>
+        <div className="text-xs mb-5" style={{ color: "#D9CDEC", ...sans }}>{meIsPaid ? `You're all set for ${year}.` : "Pay securely via Stripe."}</div>
+        {!meIsPaid && (
           <button onClick={onPay} className="w-full py-3 rounded-sm font-medium" style={{ background: C.gold, color: C.purpleDeep, ...sans }}>
             Pay Dues
           </button>
         )}
-        {me.dues_paid && (
+        {meIsPaid && (
           <div className="flex items-center justify-center gap-1 text-sm" style={{ color: "#B9DCC3", ...sans }}>
             <Check size={14} /> Payment confirmed
           </div>
