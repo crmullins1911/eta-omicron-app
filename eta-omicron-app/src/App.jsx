@@ -418,6 +418,24 @@ function DuesScreen({ isOfficer, members, me, onPay }) {
     return (
       <div className="px-5">
         <ScreenHeader title="Dues" subtitle="Chapter-wide status" />
+
+        <div className="rounded-sm p-4 mb-5" style={{ background: C.purple }}>
+          <div className="text-xs mb-1" style={{ color: C.goldSoft, ...sans, letterSpacing: "0.1em" }}>YOUR DUES</div>
+          {me.dues_paid ? (
+            <div className="flex items-center gap-1 text-sm" style={{ color: "#B9DCC3", ...sans }}>
+              <Check size={14} /> Paid for this term
+            </div>
+          ) : (
+            <>
+              <div className="text-2xl mb-2" style={{ color: C.ivory, ...serif }}>${Number(me.dues_amount ?? 75).toFixed(2)} due</div>
+              <button onClick={onPay} className="w-full py-2.5 rounded-sm font-medium text-sm" style={{ background: C.gold, color: C.purpleDeep, ...sans }}>
+                Pay Dues
+              </button>
+            </>
+          )}
+        </div>
+
+        <div className="text-xs mb-2" style={{ color: C.inkSoft, ...sans, letterSpacing: "0.08em" }}>CHAPTER-WIDE</div>
         <div className="flex gap-3 mb-5">
           <StatBlock label="Paid" value={paid} />
           <StatBlock label="Unpaid" value={members.length - paid} />
