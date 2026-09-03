@@ -25,8 +25,17 @@ export default function App() {
   const [session, setSession] = useState(null);
   const [member, setMember] = useState(null);
   const [memberLookupDone, setMemberLookupDone] = useState(false);
-  const [tab, setTab] = useState("home");
+  const [tab, setTab] = useState(() =>
+    new URLSearchParams(window.location.search).get("paid") === "1" ? "dues" : "home"
+  );
   const [recoveryMode, setRecoveryMode] = useState(false);
+
+  // If we just landed back from Stripe, clean the query string out of the URL
+  useEffect(() => {
+    if (window.location.search.includes("paid=") || window.location.search.includes("canceled=")) {
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, []);
 
   // Watch auth state
   useEffect(() => {
