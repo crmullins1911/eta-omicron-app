@@ -5,6 +5,19 @@ import {
 } from "lucide-react";
 import { supabase, SUPABASE_URL } from "./supabaseClient";
 
+// Public key only — safe to embed in client code, it's the whole point
+// of VAPID (the private key that actually signs pushes stays server-side).
+const VAPID_PUBLIC_KEY = "BCBgYD7-StN4-TSy2-W2mgn0bEfTxQ6zWXsbwpPyqOE246Zj_1RGvSBBqJedfyPzmKHBd-6Af8-UMKvGLwIGSY8";
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; i++) outputArray[i] = rawData.charCodeAt(i);
+  return outputArray;
+}
+
 // ---- Design tokens ----
 const C = {
   purpleDeep: "#241536",
@@ -254,7 +267,38 @@ function AppShell({ member, tab, setTab }) {
   const [feed, setFeed] = useState([]);
   const [duesPaidIds, setDuesPaidIds] = useState(new Set());
   const [showAddMember, setShowAddMember] = useState(false);
+  const [notifStatus, setNotifStatus] = useState(
+    typeof Notification !== "undefined" ? Notification.permission : "unsupported"
+  );
   const currentYear = new Date().getFullYear();
+
+  const enableNotifications = async () => {
+    try {
+      if (typeof Notification === "undefined") { setNotifStatus("unsupported"); return; }
+      const permission = await Notification.requestPermission();
+      setNotifStatus(permission);
+      if (permission !== "granted") return;
+
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+      });
+      const json = sub.toJSON();
+      await supabase.from("push_subscriptions").upsert(
+        {
+          member_id: member.id,
+          endpoint: json.endpoint,
+          p256dh: json.keys.p256dh,
+          auth: json.keys.auth,
+        },
+        { onConflict: "endpoint" }
+      );
+    } catch (err) {
+      console.error("Push subscription failed:", err);
+      setNotifStatus("error");
+    }
+  };
 
   const loadMembers = () => supabase.from("members").select("*").order("name").then(({ data }) => setMembers(data ?? []));
   const loadEvents = () => supabase.from("events").select("*").order("event_date").then(({ data }) => setEvents(data ?? []));
@@ -300,6 +344,14 @@ function AppShell({ member, tab, setTab }) {
   return (
     <>
       <div className="flex-1 overflow-y-auto pt-9 pb-2">
+        {notifStatus === "default" && (
+          <div className="mx-5 mb-3 p-3 rounded-sm flex items-center justify-between gap-3" style={{ background: C.purple }}>
+            <div className="text-xs" style={{ color: C.ivory, ...sans }}>Get notified about new messages</div>
+            <button onClick={enableNotifications} className="text-xs px-3 py-1.5 rounded-sm shrink-0" style={{ background: C.gold, color: C.purpleDeep, ...sans }}>
+              Enable
+            </button>
+          </div>
+        )}
         {tab === "home" && <HomeScreen member={member} events={events} />}
         {tab === "events" && <EventsScreen events={events} rsvpIds={rsvpIds} toggleRsvp={toggleRsvp} />}
         {tab === "members" && (
