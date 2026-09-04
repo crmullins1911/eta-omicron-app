@@ -326,6 +326,11 @@ function AppShell({ member, tab, setTab }) {
     loadMembers();
   };
 
+  const removeMember = async (memberId) => {
+    await supabase.from("members").delete().eq("id", memberId);
+    loadMembers();
+  };
+
   const payDues = async () => {
     const { data: { session } } = await supabase.auth.getSession();
     const res = await fetch(`${SUPABASE_URL}/functions/v1/create-checkout-session`, {
@@ -355,7 +360,7 @@ function AppShell({ member, tab, setTab }) {
         {tab === "home" && <HomeScreen member={member} events={events} />}
         {tab === "events" && <EventsScreen events={events} rsvpIds={rsvpIds} toggleRsvp={toggleRsvp} />}
         {tab === "members" && (
-          <MembersScreen members={members} isOfficer={member.is_officer} duesPaidIds={duesPaidIds} onAdd={() => setShowAddMember(true)} />
+          <MembersScreen members={members} isOfficer={member.is_officer} duesPaidIds={duesPaidIds} onAdd={() => setShowAddMember(true)} onRemove={removeMember} />
         )}
         {tab === "dues" && (
           <DuesScreen
@@ -451,7 +456,9 @@ function EventsScreen({ events, rsvpIds, toggleRsvp }) {
   );
 }
 
-function MembersScreen({ members, isOfficer, duesPaidIds, onAdd }) {
+function MembersScreen({ members, isOfficer, duesPaidIds, onAdd, onRemove }) {
+  const [confirmTarget, setConfirmTarget] = useState(null); // member object or null
+
   return (
     <div className="px-5">
       <ScreenHeader
@@ -481,9 +488,24 @@ function MembersScreen({ members, isOfficer, duesPaidIds, onAdd }) {
                 {paid ? "PAID" : "UNPAID"}
               </div>
             )}
+            {isOfficer && (
+              <button onClick={() => setConfirmTarget(m)} className="w-6 h-6 rounded-full flex items-center justify-center shrink-0" style={{ background: "#F7E9E4" }}>
+                <X size={12} color="#A15A3C" />
+              </button>
+            )}
           </div>
         );
       })}
+
+      {confirmTarget && (
+        <ConfirmModal
+          title="Remove Member"
+          message={`Remove ${confirmTarget.name} from the roster? This also removes their RSVPs, messages, and dues history.`}
+          confirmLabel="Remove"
+          onCancel={() => setConfirmTarget(null)}
+          onConfirm={() => { onRemove(confirmTarget.id); setConfirmTarget(null); }}
+        />
+      )}
     </div>
   );
 }
@@ -754,6 +776,8 @@ function GroupThread({ me, group, members, onBack }) {
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
+  const [showManage, setShowManage] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(null); // member object or null
 
   const loadMessages = () => supabase
     .from("group_messages")
@@ -785,7 +809,14 @@ function GroupThread({ me, group, members, onBack }) {
     loadMembers();
   };
 
+  const removeFromGroup = async (memberId) => {
+    await supabase.from("group_members").delete().eq("group_id", group.id).eq("member_id", memberId);
+    setConfirmRemove(null);
+    loadMembers();
+  };
+
   const notInGroup = members.filter(m => !groupMembers.includes(m.id));
+  const inGroup = members.filter(m => groupMembers.includes(m.id));
 
   return (
     <div className="px-5">
@@ -794,7 +825,9 @@ function GroupThread({ me, group, members, onBack }) {
           <button onClick={onBack}><ArrowLeft size={18} color={C.inkSoft} /></button>
           <div>
             <div className="text-lg" style={{ ...serif, color: C.ink }}>{group.name}</div>
-            <div className="text-xs" style={{ color: C.inkSoft, ...sans }}>{groupMembers.length} members</div>
+            <button onClick={() => setShowManage(true)} className="text-xs" style={{ color: C.purple, ...sans, textDecoration: "underline" }}>
+              {groupMembers.length} members — manage
+            </button>
           </div>
         </div>
         <button onClick={() => setShowAdd(true)} className="w-7 h-7 rounded-full flex items-center justify-center" style={{ background: C.purple }}>
@@ -835,6 +868,37 @@ function GroupThread({ me, group, members, onBack }) {
         <div className="absolute inset-0 z-30 flex items-end" style={{ background: "rgba(36,21,54,0.55)" }}>
           <AddToGroupModal candidates={notInGroup} onClose={() => setShowAdd(false)} onAdd={addMembers} />
         </div>
+      )}
+
+      {showManage && (
+        <div className="absolute inset-0 z-30 flex items-end" style={{ background: "rgba(36,21,54,0.55)" }}>
+          <div className="w-full rounded-t-2xl p-5" style={{ background: "#fff", maxHeight: "80%", overflowY: "auto" }}>
+            <div className="flex items-center justify-between mb-4">
+              <div className="text-lg" style={{ ...serif, color: C.ink }}>Group Members</div>
+              <button onClick={() => setShowManage(false)}><X size={18} color={C.inkSoft} /></button>
+            </div>
+            {inGroup.map(m => (
+              <div key={m.id} className="flex items-center justify-between py-2" style={{ borderTop: `1px solid ${C.line}` }}>
+                <span className="text-sm" style={{ color: C.ink, ...sans }}>{m.name}{m.id === me.id ? " (you)" : ""}</span>
+                <button onClick={() => setConfirmRemove(m)} className="w-6 h-6 rounded-full flex items-center justify-center shrink-0" style={{ background: "#F7E9E4" }}>
+                  <X size={12} color="#A15A3C" />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {confirmRemove && (
+        <ConfirmModal
+          title="Remove from Group"
+          message={confirmRemove.id === me.id
+            ? "Leave this group? You'll need to be re-added to rejoin."
+            : `Remove ${confirmRemove.name} from ${group.name}?`}
+          confirmLabel="Remove"
+          onCancel={() => setConfirmRemove(null)}
+          onConfirm={() => removeFromGroup(confirmRemove.id)}
+        />
       )}
     </div>
   );
@@ -988,6 +1052,25 @@ function DirectThread({ me, other, onBack }) {
         <button onClick={send} disabled={!text.trim()} className="w-10 h-10 rounded-sm flex items-center justify-center disabled:opacity-40" style={{ background: C.purple }}>
           <Send size={16} color={C.ivory} />
         </button>
+      </div>
+    </div>
+  );
+}
+
+function ConfirmModal({ title, message, confirmLabel, onCancel, onConfirm }) {
+  return (
+    <div className="absolute inset-0 z-40 flex items-end" style={{ background: "rgba(36,21,54,0.55)" }}>
+      <div className="w-full rounded-t-2xl p-5" style={{ background: "#fff" }}>
+        <div className="text-lg mb-2" style={{ ...serif, color: C.ink }}>{title}</div>
+        <div className="text-sm mb-5" style={{ color: C.inkSoft, ...sans }}>{message}</div>
+        <div className="flex gap-2">
+          <button onClick={onCancel} className="flex-1 py-3 rounded-sm font-medium text-sm" style={{ background: C.ivory, border: `1px solid ${C.line}`, color: C.ink, ...sans }}>
+            Cancel
+          </button>
+          <button onClick={onConfirm} className="flex-1 py-3 rounded-sm font-medium text-sm" style={{ background: "#A15A3C", color: "#fff", ...sans }}>
+            {confirmLabel}
+          </button>
+        </div>
       </div>
     </div>
   );
