@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import {
   Home, CalendarDays, Users, CircleDollarSign, Images, MessageCircle,
-  Plus, Check, Clock, MapPin, X, Camera, Heart, LogOut, ArrowLeft, Send
+  Plus, Check, Clock, MapPin, X, Camera, Heart, LogOut, ArrowLeft, Send,
+  Paperclip, Download, FileText
 } from "lucide-react";
 import { supabase, SUPABASE_URL } from "./supabaseClient";
 
@@ -634,6 +635,83 @@ function FeedScreen({ feed, onAddPost }) {
   );
 }
 
+// ---- Chat attachments ----
+
+const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10MB — keeps things well within free-tier storage
+
+async function uploadChatFile(file, senderId) {
+  if (file.size > MAX_FILE_BYTES) {
+    alert("That file is over 10MB — try something smaller.");
+    return null;
+  }
+  const path = `${senderId}/${Date.now()}-${file.name}`;
+  const { error } = await supabase.storage.from("chat-uploads").upload(path, file);
+  if (error) {
+    alert("Upload failed: " + error.message);
+    return null;
+  }
+  return { file_path: path, file_name: file.name, file_type: file.type };
+}
+
+function Attachment({ filePath, fileName, fileType }) {
+  const [url, setUrl] = useState(null);
+
+  useEffect(() => {
+    let active = true;
+    supabase.storage.from("chat-uploads").createSignedUrl(filePath, 3600).then(({ data }) => {
+      if (active && data) setUrl(data.signedUrl);
+    });
+    return () => { active = false; };
+  }, [filePath]);
+
+  const isImage = fileType?.startsWith("image/");
+
+  if (!url) return <div className="text-xs mt-1" style={{ color: C.inkSoft, ...sans }}>Loading attachment…</div>;
+
+  if (isImage) {
+    return (
+      <a href={url} target="_blank" rel="noopener noreferrer" className="block mt-1">
+        <img src={url} alt={fileName} className="rounded-sm max-w-full" style={{ maxHeight: 220 }} />
+      </a>
+    );
+  }
+
+  return (
+    <a href={url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 mt-1 px-2 py-1.5 rounded-sm" style={{ background: "rgba(0,0,0,0.06)" }}>
+      <FileText size={14} />
+      <span className="text-xs truncate" style={{ ...sans }}>{fileName}</span>
+      <Download size={12} className="shrink-0" />
+    </a>
+  );
+}
+
+function AttachButton({ onFile }) {
+  const inputRef = useRef(null);
+  return (
+    <>
+      <input
+        ref={inputRef}
+        type="file"
+        className="hidden"
+        onChange={(e) => { if (e.target.files[0]) onFile(e.target.files[0]); e.target.value = ""; }}
+      />
+      <button onClick={() => inputRef.current?.click()} className="w-10 h-10 rounded-sm flex items-center justify-center shrink-0" style={{ background: "#fff", border: `1px solid ${C.line}` }}>
+        <Paperclip size={16} color={C.inkSoft} />
+      </button>
+    </>
+  );
+}
+
+function PendingAttachment({ fileName, onRemove }) {
+  return (
+    <div className="flex items-center gap-2 mb-2 px-2 py-1.5 rounded-sm text-xs" style={{ background: "#F2EEE0", ...sans }}>
+      <Paperclip size={12} />
+      <span className="flex-1 truncate">{fileName}</span>
+      <button onClick={onRemove}><X size={12} color={C.inkSoft} /></button>
+    </div>
+  );
+}
+
 // ---- Messages ----
 
 function MessagesScreen({ member, members }) {
@@ -778,6 +856,8 @@ function GroupThread({ me, group, members, onBack }) {
   const [showAdd, setShowAdd] = useState(false);
   const [showManage, setShowManage] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(null); // member object or null
+  const [pendingFile, setPendingFile] = useState(null);
+  const [uploading, setUploading] = useState(false);
 
   const loadMessages = () => supabase
     .from("group_messages")
@@ -794,11 +874,27 @@ function GroupThread({ me, group, members, onBack }) {
 
   useEffect(() => { loadMessages(); loadMembers(); }, []); // eslint-disable-line
 
+  const handleFile = async (file) => {
+    setUploading(true);
+    const result = await uploadChatFile(file, me.id);
+    setUploading(false);
+    if (result) setPendingFile(result);
+  };
+
   const send = async () => {
-    if (!text.trim()) return;
+    if (!text.trim() && !pendingFile) return;
     const body = text;
+    const attachment = pendingFile;
     setText("");
-    await supabase.from("group_messages").insert({ group_id: group.id, sender_id: me.id, body });
+    setPendingFile(null);
+    await supabase.from("group_messages").insert({
+      group_id: group.id,
+      sender_id: me.id,
+      body,
+      file_path: attachment?.file_path ?? null,
+      file_name: attachment?.file_name ?? null,
+      file_type: attachment?.file_type ?? null,
+    });
     loadMessages();
   };
 
@@ -845,21 +941,25 @@ function GroupThread({ me, group, members, onBack }) {
               {!mine && <div className="text-[10px] mb-0.5" style={{ color: C.inkSoft, ...sans }}>{m.members?.name ?? "Member"}</div>}
               <div className="inline-block px-3 py-2 rounded-sm text-sm max-w-[85%]" style={mine ? { background: C.purple, color: C.ivory, ...sans } : { background: "#fff", border: `1px solid ${C.line}`, color: C.ink, ...sans }}>
                 {m.body}
+                {m.file_path && <Attachment filePath={m.file_path} fileName={m.file_name} fileType={m.file_type} />}
               </div>
             </div>
           );
         })}
       </div>
+      {pendingFile && <PendingAttachment fileName={pendingFile.file_name} onRemove={() => setPendingFile(null)} />}
       <div className="flex gap-2">
+        <AttachButton onFile={handleFile} />
         <input
           value={text}
           onChange={e => setText(e.target.value)}
           onKeyDown={e => e.key === "Enter" && send()}
-          placeholder={`Message ${group.name}…`}
+          placeholder={uploading ? "Uploading…" : `Message ${group.name}…`}
+          disabled={uploading}
           className="flex-1 px-3 py-2 rounded-sm text-sm"
           style={{ border: `1px solid ${C.line}`, ...sans }}
         />
-        <button onClick={send} disabled={!text.trim()} className="w-10 h-10 rounded-sm flex items-center justify-center disabled:opacity-40" style={{ background: C.purple }}>
+        <button onClick={send} disabled={uploading || (!text.trim() && !pendingFile)} className="w-10 h-10 rounded-sm flex items-center justify-center disabled:opacity-40" style={{ background: C.purple }}>
           <Send size={16} color={C.ivory} />
         </button>
       </div>
@@ -940,6 +1040,8 @@ function ChapterChat({ me }) {
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(true);
+  const [pendingFile, setPendingFile] = useState(null); // { file_path, file_name, file_type } or null
+  const [uploading, setUploading] = useState(false);
 
   const load = () => supabase
     .from("chapter_messages")
@@ -949,11 +1051,26 @@ function ChapterChat({ me }) {
 
   useEffect(() => { load(); }, []); // eslint-disable-line
 
+  const handleFile = async (file) => {
+    setUploading(true);
+    const result = await uploadChatFile(file, me.id);
+    setUploading(false);
+    if (result) setPendingFile(result);
+  };
+
   const send = async () => {
-    if (!text.trim()) return;
+    if (!text.trim() && !pendingFile) return;
     const body = text;
+    const attachment = pendingFile;
     setText("");
-    await supabase.from("chapter_messages").insert({ sender_id: me.id, body });
+    setPendingFile(null);
+    await supabase.from("chapter_messages").insert({
+      sender_id: me.id,
+      body,
+      file_path: attachment?.file_path ?? null,
+      file_name: attachment?.file_name ?? null,
+      file_type: attachment?.file_type ?? null,
+    });
     load();
   };
 
@@ -972,21 +1089,25 @@ function ChapterChat({ me }) {
                 style={mine ? { background: C.purple, color: C.ivory, ...sans } : { background: "#fff", border: `1px solid ${C.line}`, color: C.ink, ...sans }}
               >
                 {m.body}
+                {m.file_path && <Attachment filePath={m.file_path} fileName={m.file_name} fileType={m.file_type} />}
               </div>
             </div>
           );
         })}
       </div>
+      {pendingFile && <PendingAttachment fileName={pendingFile.file_name} onRemove={() => setPendingFile(null)} />}
       <div className="flex gap-2">
+        <AttachButton onFile={handleFile} />
         <input
           value={text}
           onChange={e => setText(e.target.value)}
           onKeyDown={e => e.key === "Enter" && send()}
-          placeholder="Message the chapter…"
+          placeholder={uploading ? "Uploading…" : "Message the chapter…"}
+          disabled={uploading}
           className="flex-1 px-3 py-2 rounded-sm text-sm"
           style={{ border: `1px solid ${C.line}`, ...sans }}
         />
-        <button onClick={send} disabled={!text.trim()} className="w-10 h-10 rounded-sm flex items-center justify-center disabled:opacity-40" style={{ background: C.purple }}>
+        <button onClick={send} disabled={uploading || (!text.trim() && !pendingFile)} className="w-10 h-10 rounded-sm flex items-center justify-center disabled:opacity-40" style={{ background: C.purple }}>
           <Send size={16} color={C.ivory} />
         </button>
       </div>
@@ -998,6 +1119,8 @@ function DirectThread({ me, other, onBack }) {
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(true);
+  const [pendingFile, setPendingFile] = useState(null);
+  const [uploading, setUploading] = useState(false);
 
   const load = () => supabase
     .from("direct_messages")
@@ -1008,11 +1131,27 @@ function DirectThread({ me, other, onBack }) {
 
   useEffect(() => { load(); }, []); // eslint-disable-line
 
+  const handleFile = async (file) => {
+    setUploading(true);
+    const result = await uploadChatFile(file, me.id);
+    setUploading(false);
+    if (result) setPendingFile(result);
+  };
+
   const send = async () => {
-    if (!text.trim()) return;
+    if (!text.trim() && !pendingFile) return;
     const body = text;
+    const attachment = pendingFile;
     setText("");
-    await supabase.from("direct_messages").insert({ sender_id: me.id, recipient_id: other.id, body });
+    setPendingFile(null);
+    await supabase.from("direct_messages").insert({
+      sender_id: me.id,
+      recipient_id: other.id,
+      body,
+      file_path: attachment?.file_path ?? null,
+      file_name: attachment?.file_name ?? null,
+      file_type: attachment?.file_type ?? null,
+    });
     load();
   };
 
@@ -1035,21 +1174,25 @@ function DirectThread({ me, other, onBack }) {
                 style={mine ? { background: C.purple, color: C.ivory, ...sans } : { background: "#fff", border: `1px solid ${C.line}`, color: C.ink, ...sans }}
               >
                 {m.body}
+                {m.file_path && <Attachment filePath={m.file_path} fileName={m.file_name} fileType={m.file_type} />}
               </div>
             </div>
           );
         })}
       </div>
+      {pendingFile && <PendingAttachment fileName={pendingFile.file_name} onRemove={() => setPendingFile(null)} />}
       <div className="flex gap-2">
+        <AttachButton onFile={handleFile} />
         <input
           value={text}
           onChange={e => setText(e.target.value)}
           onKeyDown={e => e.key === "Enter" && send()}
-          placeholder={`Message ${other.name.split(" ")[0]}…`}
+          placeholder={uploading ? "Uploading…" : `Message ${other.name.split(" ")[0]}…`}
+          disabled={uploading}
           className="flex-1 px-3 py-2 rounded-sm text-sm"
           style={{ border: `1px solid ${C.line}`, ...sans }}
         />
-        <button onClick={send} disabled={!text.trim()} className="w-10 h-10 rounded-sm flex items-center justify-center disabled:opacity-40" style={{ background: C.purple }}>
+        <button onClick={send} disabled={uploading || (!text.trim() && !pendingFile)} className="w-10 h-10 rounded-sm flex items-center justify-center disabled:opacity-40" style={{ background: C.purple }}>
           <Send size={16} color={C.ivory} />
         </button>
       </div>
