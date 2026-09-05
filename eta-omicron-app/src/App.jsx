@@ -61,19 +61,46 @@ export default function App() {
     return () => sub.subscription.unsubscribe();
   }, []);
 
-  // Once logged in, look up this person's member row
+  // Once logged in, look up this person's member row. If the normal
+  // auto-link trigger somehow missed (e.g. an admin added them after
+  // they already had a login), fall back to matching by email and
+  // self-heal the link right here, instead of leaving them stuck.
   useEffect(() => {
     if (!session) { setMember(null); setMemberLookupDone(false); return; }
     setMemberLookupDone(false);
-    supabase
-      .from("members")
-      .select("*")
-      .eq("auth_user_id", session.user.id)
-      .maybeSingle()
-      .then(({ data }) => {
-        setMember(data ?? null);
-        setMemberLookupDone(true);
-      });
+
+    const findAndLinkMember = async () => {
+      let { data } = await supabase
+        .from("members")
+        .select("*")
+        .eq("auth_user_id", session.user.id)
+        .maybeSingle();
+
+      if (!data) {
+        const { data: byEmail } = await supabase
+          .from("members")
+          .select("*")
+          .ilike("email", session.user.email)
+          .maybeSingle();
+
+        if (byEmail && !byEmail.auth_user_id) {
+          const { data: linked } = await supabase
+            .from("members")
+            .update({ auth_user_id: session.user.id })
+            .eq("id", byEmail.id)
+            .select()
+            .maybeSingle();
+          data = linked ?? byEmail;
+        } else {
+          data = byEmail ?? null;
+        }
+      }
+
+      setMember(data ?? null);
+      setMemberLookupDone(true);
+    };
+
+    findAndLinkMember();
   }, [session]);
 
   if (recoveryMode) return <Frame><ResetPasswordScreen onDone={() => setRecoveryMode(false)} /></Frame>;
@@ -407,7 +434,7 @@ function HomeScreen({ member, events }) {
       <div className="rounded-sm p-4 mb-5" style={{ background: C.purple }}>
         <div className="text-xs mb-1" style={{ color: C.goldSoft, ...sans, letterSpacing: "0.1em" }}>CHAPTER HISTORY</div>
         <div className="text-sm leading-relaxed" style={{ color: C.ivory, ...sans }}>
-          Chartered to serve Calhoun County and the surrounding community through Manhood, Scholarship, Perseverance, and Uplift.
+          Chartered to serve the surrounding community through Manhood, Scholarship, Perseverance, and Uplift.
         </div>
       </div>
       <div className="text-xs mb-2" style={{ color: C.inkSoft, ...sans, letterSpacing: "0.08em" }}>UPCOMING</div>
