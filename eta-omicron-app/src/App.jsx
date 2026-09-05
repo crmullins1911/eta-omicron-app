@@ -339,7 +339,17 @@ function AppShell({ member, tab, setTab }) {
       setLikes(map);
     });
 
-  useEffect(() => { loadMembers(); loadEvents(); loadRsvps(); loadFeed(); loadDues(); loadLikes(); }, []); // eslint-disable-line
+  useEffect(() => {
+    loadMembers(); loadEvents(); loadRsvps(); loadFeed(); loadDues(); loadLikes();
+
+    const channel = supabase
+      .channel("feed_live")
+      .on("postgres_changes", { event: "*", schema: "public", table: "post_likes" }, () => loadLikes())
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "posts" }, () => loadFeed())
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, []); // eslint-disable-line
 
   const toggleLike = async (postId) => {
     const current = likes[postId];
@@ -410,11 +420,11 @@ function AppShell({ member, tab, setTab }) {
         {tab === "home" && <HomeScreen member={member} events={events} />}
         {tab === "events" && <EventsScreen events={events} rsvpIds={rsvpIds} toggleRsvp={toggleRsvp} isOfficer={member.is_officer} onUpdate={updateEvent} onDelete={deleteEvent} />}
         {tab === "members" && (
-          <MembersScreen members={members} isOfficer={member.is_officer} duesPaidIds={duesPaidIds} onAdd={() => setShowAddMember(true)} onRemove={removeMember} />
+          <MembersScreen members={members} isAdmin={member.is_Admin} duesPaidIds={duesPaidIds} onAdd={() => setShowAddMember(true)} onRemove={removeMember} />
         )}
         {tab === "dues" && (
           <DuesScreen
-            isOfficer={member.is_officer}
+            isAdmin={member.is_Admin}
             members={members}
             duesPaidIds={duesPaidIds}
             year={currentYear}
