@@ -348,6 +348,16 @@ function AppShell({ member, tab, setTab }) {
     loadRsvps();
   };
 
+  const updateEvent = async (eventId, fields) => {
+    await supabase.from("events").update(fields).eq("id", eventId);
+    loadEvents();
+  };
+
+  const deleteEvent = async (eventId) => {
+    await supabase.from("events").delete().eq("id", eventId);
+    loadEvents();
+  };
+
   const addMember = async (name, email, roleTitle) => {
     await supabase.from("members").insert({ name, email, role: roleTitle || "Member" });
     setShowAddMember(false);
@@ -369,8 +379,8 @@ function AppShell({ member, tab, setTab }) {
     else alert(body.error || "Could not start checkout");
   };
 
-  const addPost = async (caption) => {
-    await supabase.from("posts").insert({ author_id: member.id, caption });
+  const addPost = async (caption, imagePath) => {
+    await supabase.from("posts").insert({ author_id: member.id, caption, image_url: imagePath ?? null });
     loadFeed();
   };
 
@@ -386,7 +396,7 @@ function AppShell({ member, tab, setTab }) {
           </div>
         )}
         {tab === "home" && <HomeScreen member={member} events={events} />}
-        {tab === "events" && <EventsScreen events={events} rsvpIds={rsvpIds} toggleRsvp={toggleRsvp} />}
+        {tab === "events" && <EventsScreen events={events} rsvpIds={rsvpIds} toggleRsvp={toggleRsvp} isOfficer={member.is_officer} onUpdate={updateEvent} onDelete={deleteEvent} />}
         {tab === "members" && (
           <MembersScreen members={members} isOfficer={member.is_officer} duesPaidIds={duesPaidIds} onAdd={() => setShowAddMember(true)} onRemove={removeMember} />
         )}
@@ -401,7 +411,7 @@ function AppShell({ member, tab, setTab }) {
             onPay={payDues}
           />
         )}
-        {tab === "feed" && <FeedScreen feed={feed} onAddPost={addPost} />}
+        {tab === "feed" && <FeedScreen feed={feed} onAddPost={addPost} member={member} />}
         {tab === "messages" && <MessagesScreen member={member} members={members} />}
       </div>
 
@@ -455,7 +465,10 @@ function HomeScreen({ member, events }) {
   );
 }
 
-function EventsScreen({ events, rsvpIds, toggleRsvp }) {
+function EventsScreen({ events, rsvpIds, toggleRsvp, isOfficer, onUpdate, onDelete }) {
+  const [editing, setEditing] = useState(null); // event object or null
+  const [confirmDelete, setConfirmDelete] = useState(null); // event object or null
+
   return (
     <div className="px-5">
       <ScreenHeader title="Events" subtitle="Chapter calendar" />
@@ -463,7 +476,17 @@ function EventsScreen({ events, rsvpIds, toggleRsvp }) {
         const going = rsvpIds.has(e.id);
         return (
           <div key={e.id} className="mb-3 p-4 rounded-sm" style={{ background: "#fff", borderTop: `3px solid ${going ? C.green : C.gold}` }}>
-            <div className="text-base" style={{ color: C.ink, ...serif }}>{e.title}</div>
+            <div className="flex items-start justify-between">
+              <div className="text-base" style={{ color: C.ink, ...serif }}>{e.title}</div>
+              {isOfficer && (
+                <div className="flex gap-1 shrink-0">
+                  <button onClick={() => setEditing(e)} className="text-[10px] px-2 py-1 rounded-sm" style={{ background: C.ivory, color: C.inkSoft, ...sans }}>Edit</button>
+                  <button onClick={() => setConfirmDelete(e)} className="w-6 h-6 rounded-full flex items-center justify-center" style={{ background: "#F7E9E4" }}>
+                    <X size={12} color="#A15A3C" />
+                  </button>
+                </div>
+              )}
+            </div>
             <div className="flex items-center gap-1 mt-1 text-xs" style={{ color: C.inkSoft, ...sans }}>
               <Clock size={12} /> {new Date(e.event_date).toLocaleDateString()} · {e.event_time}
             </div>
@@ -480,6 +503,56 @@ function EventsScreen({ events, rsvpIds, toggleRsvp }) {
           </div>
         );
       })}
+
+      {editing && (
+        <EditEventModal
+          event={editing}
+          onClose={() => setEditing(null)}
+          onSave={(fields) => { onUpdate(editing.id, fields); setEditing(null); }}
+        />
+      )}
+      {confirmDelete && (
+        <ConfirmModal
+          title="Delete Event"
+          message={`Delete "${confirmDelete.title}"? This also removes everyone's RSVPs for it.`}
+          confirmLabel="Delete"
+          onCancel={() => setConfirmDelete(null)}
+          onConfirm={() => { onDelete(confirmDelete.id); setConfirmDelete(null); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function EditEventModal({ event, onClose, onSave }) {
+  const [title, setTitle] = useState(event.title);
+  const [date, setDate] = useState(event.event_date);
+  const [time, setTime] = useState(event.event_time || "");
+  const [location, setLocation] = useState(event.location || "");
+
+  return (
+    <div className="absolute inset-0 z-30 flex items-end" style={{ background: "rgba(36,21,54,0.55)" }}>
+      <div className="w-full rounded-t-2xl p-5" style={{ background: "#fff" }}>
+        <div className="flex items-center justify-between mb-4">
+          <div className="text-lg" style={{ ...serif, color: C.ink }}>Edit Event</div>
+          <button onClick={onClose}><X size={18} color={C.inkSoft} /></button>
+        </div>
+        <label className="text-xs" style={{ color: C.inkSoft, ...sans }}>Title</label>
+        <input value={title} onChange={e => setTitle(e.target.value)} className="w-full mt-1 mb-3 px-3 py-2 rounded-sm text-sm" style={{ border: `1px solid ${C.line}`, ...sans }} />
+        <label className="text-xs" style={{ color: C.inkSoft, ...sans }}>Date</label>
+        <input type="date" value={date} onChange={e => setDate(e.target.value)} className="w-full mt-1 mb-3 px-3 py-2 rounded-sm text-sm" style={{ border: `1px solid ${C.line}`, ...sans }} />
+        <label className="text-xs" style={{ color: C.inkSoft, ...sans }}>Time</label>
+        <input value={time} onChange={e => setTime(e.target.value)} placeholder="e.g. 7:00 PM" className="w-full mt-1 mb-3 px-3 py-2 rounded-sm text-sm" style={{ border: `1px solid ${C.line}`, ...sans }} />
+        <label className="text-xs" style={{ color: C.inkSoft, ...sans }}>Location</label>
+        <input value={location} onChange={e => setLocation(e.target.value)} className="w-full mt-1 mb-5 px-3 py-2 rounded-sm text-sm" style={{ border: `1px solid ${C.line}`, ...sans }} />
+        <button
+          onClick={() => onSave({ title, event_date: date, event_time: time, location })}
+          className="w-full py-3 rounded-sm font-medium"
+          style={{ background: C.purple, color: C.ivory, ...sans }}
+        >
+          Save Changes
+        </button>
+      </div>
     </div>
   );
 }
@@ -624,16 +697,34 @@ function StatBlock({ label, value }) {
   );
 }
 
-function FeedScreen({ feed, onAddPost }) {
+function FeedScreen({ feed, onAddPost, member }) {
   const [caption, setCaption] = useState("");
+  const [pendingPhoto, setPendingPhoto] = useState(null);
+  const [uploading, setUploading] = useState(false);
+
+  const handlePhoto = async (file) => {
+    setUploading(true);
+    const result = await uploadFileToBucket(file, "feed-photos", member.id);
+    setUploading(false);
+    if (result) setPendingPhoto(result);
+  };
+
+  const submit = () => {
+    onAddPost(caption, pendingPhoto?.file_path ?? null);
+    setCaption("");
+    setPendingPhoto(null);
+  };
+
   return (
     <div className="px-5">
       <ScreenHeader title="Chapter Feed" subtitle="Photos & updates" />
+      {pendingPhoto && <PendingAttachment fileName={pendingPhoto.file_name} onRemove={() => setPendingPhoto(null)} />}
       <div className="mb-5 flex gap-2">
-        <input value={caption} onChange={e => setCaption(e.target.value)} placeholder="Share an update…" className="flex-1 px-3 py-2 rounded-sm text-sm" style={{ border: `1px solid ${C.line}`, ...sans }} />
+        <AttachButton onFile={handlePhoto} accept="image/*" />
+        <input value={caption} onChange={e => setCaption(e.target.value)} placeholder={uploading ? "Uploading…" : "Share an update…"} disabled={uploading} className="flex-1 px-3 py-2 rounded-sm text-sm" style={{ border: `1px solid ${C.line}`, ...sans }} />
         <button
-          disabled={!caption}
-          onClick={() => { onAddPost(caption); setCaption(""); }}
+          disabled={uploading || (!caption && !pendingPhoto)}
+          onClick={submit}
           className="px-3 rounded-sm text-xs disabled:opacity-40"
           style={{ background: C.purple, color: C.ivory, ...sans }}
         >
@@ -643,7 +734,7 @@ function FeedScreen({ feed, onAddPost }) {
       {feed.map(p => (
         <div key={p.id} className="mb-5 rounded-sm overflow-hidden" style={{ background: "#fff", border: `1px solid ${C.line}` }}>
           {p.image_url ? (
-            <img src={p.image_url} alt="" className="h-40 w-full object-cover" />
+            <FeedImage path={p.image_url} />
           ) : (
             <div className="h-24 flex items-center justify-center" style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleSoft})` }}>
               <Camera size={24} color={C.goldSoft} />
@@ -666,18 +757,22 @@ function FeedScreen({ feed, onAddPost }) {
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10MB — keeps things well within free-tier storage
 
-async function uploadChatFile(file, senderId) {
+async function uploadFileToBucket(file, bucket, folder) {
   if (file.size > MAX_FILE_BYTES) {
     alert("That file is over 10MB — try something smaller.");
     return null;
   }
-  const path = `${senderId}/${Date.now()}-${file.name}`;
-  const { error } = await supabase.storage.from("chat-uploads").upload(path, file);
+  const path = `${folder}/${Date.now()}-${file.name}`;
+  const { error } = await supabase.storage.from(bucket).upload(path, file);
   if (error) {
     alert("Upload failed: " + error.message);
     return null;
   }
   return { file_path: path, file_name: file.name, file_type: file.type };
+}
+
+async function uploadChatFile(file, senderId) {
+  return uploadFileToBucket(file, "chat-uploads", senderId);
 }
 
 function Attachment({ filePath, fileName, fileType }) {
@@ -712,13 +807,29 @@ function Attachment({ filePath, fileName, fileType }) {
   );
 }
 
-function AttachButton({ onFile }) {
+function FeedImage({ path }) {
+  const [url, setUrl] = useState(null);
+
+  useEffect(() => {
+    let active = true;
+    supabase.storage.from("feed-photos").createSignedUrl(path, 3600).then(({ data }) => {
+      if (active && data) setUrl(data.signedUrl);
+    });
+    return () => { active = false; };
+  }, [path]);
+
+  if (!url) return <div className="h-40 w-full flex items-center justify-center" style={{ background: "#F2EEE0" }}><span className="text-xs" style={{ color: C.inkSoft, ...sans }}>Loading…</span></div>;
+  return <img src={url} alt="" className="h-40 w-full object-cover" />;
+}
+
+function AttachButton({ onFile, accept }) {
   const inputRef = useRef(null);
   return (
     <>
       <input
         ref={inputRef}
         type="file"
+        accept={accept}
         className="hidden"
         onChange={(e) => { if (e.target.files[0]) onFile(e.target.files[0]); e.target.value = ""; }}
       />
@@ -899,7 +1010,15 @@ function GroupThread({ me, group, members, onBack }) {
     .eq("group_id", group.id)
     .then(({ data }) => setGroupMembers((data ?? []).map(r => r.member_id)));
 
-  useEffect(() => { loadMessages(); loadMembers(); }, []); // eslint-disable-line
+  useEffect(() => {
+    loadMessages();
+    loadMembers();
+    const channel = supabase
+      .channel(`group_messages_live_${group.id}`)
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "group_messages", filter: `group_id=eq.${group.id}` }, () => loadMessages())
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, []); // eslint-disable-line
 
   const handleFile = async (file) => {
     setUploading(true);
@@ -1076,7 +1195,14 @@ function ChapterChat({ me }) {
     .order("created_at", { ascending: true })
     .then(({ data }) => { setMessages(data ?? []); setLoading(false); });
 
-  useEffect(() => { load(); }, []); // eslint-disable-line
+  useEffect(() => {
+    load();
+    const channel = supabase
+      .channel("chapter_messages_live")
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "chapter_messages" }, () => load())
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, []); // eslint-disable-line
 
   const handleFile = async (file) => {
     setUploading(true);
@@ -1156,7 +1282,14 @@ function DirectThread({ me, other, onBack }) {
     .order("created_at", { ascending: true })
     .then(({ data }) => { setMessages(data ?? []); setLoading(false); });
 
-  useEffect(() => { load(); }, []); // eslint-disable-line
+  useEffect(() => {
+    load();
+    const channel = supabase
+      .channel(`direct_messages_live_${me.id}_${other.id}`)
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "direct_messages" }, () => load())
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, []); // eslint-disable-line
 
   const handleFile = async (file) => {
     setUploading(true);
