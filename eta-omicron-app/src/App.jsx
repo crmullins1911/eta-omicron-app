@@ -63,8 +63,9 @@ export default function App() {
 
   // Once logged in, look up this person's member row. If the normal
   // auto-link trigger somehow missed (e.g. an admin added them after
-  // they already had a login), fall back to matching by email and
-  // self-heal the link right here, instead of leaving them stuck.
+  // they already had a login), call the safe claim_member_row()
+  // function to self-heal the link — it can only ever set
+  // auth_user_id on the caller's own matching-email row, nothing else.
   useEffect(() => {
     if (!session) { setMember(null); setMemberLookupDone(false); return; }
     setMemberLookupDone(false);
@@ -77,23 +78,13 @@ export default function App() {
         .maybeSingle();
 
       if (!data) {
-        const { data: byEmail } = await supabase
+        await supabase.rpc("claim_member_row");
+        const { data: reloaded } = await supabase
           .from("members")
           .select("*")
-          .ilike("email", session.user.email)
+          .eq("auth_user_id", session.user.id)
           .maybeSingle();
-
-        if (byEmail && !byEmail.auth_user_id) {
-          const { data: linked } = await supabase
-            .from("members")
-            .update({ auth_user_id: session.user.id })
-            .eq("id", byEmail.id)
-            .select()
-            .maybeSingle();
-          data = linked ?? byEmail;
-        } else {
-          data = byEmail ?? null;
-        }
+        data = reloaded ?? null;
       }
 
       setMember(data ?? null);
@@ -294,6 +285,7 @@ function AppShell({ member, tab, setTab }) {
   const [rsvpIds, setRsvpIds] = useState(new Set());
   const [feed, setFeed] = useState([]);
   const [duesPaidIds, setDuesPaidIds] = useState(new Set());
+  const [likes, setLikes] = useState({}); // { [postId]: { count, mine } }
   const [showAddMember, setShowAddMember] = useState(false);
   const [notifStatus, setNotifStatus] = useState(
     typeof Notification !== "undefined" ? Notification.permission : "unsupported"
@@ -336,8 +328,28 @@ function AppShell({ member, tab, setTab }) {
     .then(({ data }) => setFeed(data ?? []));
   const loadDues = () => supabase.from("dues_payments").select("member_id").eq("year", currentYear)
     .then(({ data }) => setDuesPaidIds(new Set((data ?? []).map(d => d.member_id))));
+  const loadLikes = () => supabase.from("post_likes").select("post_id, member_id")
+    .then(({ data }) => {
+      const map = {};
+      (data ?? []).forEach(row => {
+        if (!map[row.post_id]) map[row.post_id] = { count: 0, mine: false };
+        map[row.post_id].count++;
+        if (row.member_id === member.id) map[row.post_id].mine = true;
+      });
+      setLikes(map);
+    });
 
-  useEffect(() => { loadMembers(); loadEvents(); loadRsvps(); loadFeed(); loadDues(); }, []); // eslint-disable-line
+  useEffect(() => { loadMembers(); loadEvents(); loadRsvps(); loadFeed(); loadDues(); loadLikes(); }, []); // eslint-disable-line
+
+  const toggleLike = async (postId) => {
+    const current = likes[postId];
+    if (current?.mine) {
+      await supabase.from("post_likes").delete().eq("post_id", postId).eq("member_id", member.id);
+    } else {
+      await supabase.from("post_likes").insert({ post_id: postId, member_id: member.id });
+    }
+    loadLikes();
+  };
 
   const toggleRsvp = async (eventId) => {
     if (rsvpIds.has(eventId)) {
@@ -411,7 +423,7 @@ function AppShell({ member, tab, setTab }) {
             onPay={payDues}
           />
         )}
-        {tab === "feed" && <FeedScreen feed={feed} onAddPost={addPost} member={member} />}
+        {tab === "feed" && <FeedScreen feed={feed} onAddPost={addPost} member={member} likes={likes} onToggleLike={toggleLike} />}
         {tab === "messages" && <MessagesScreen member={member} members={members} />}
       </div>
 
@@ -613,6 +625,9 @@ function MembersScreen({ members, isOfficer, duesPaidIds, onAdd, onRemove }) {
 
 function DuesScreen({ isOfficer, members, duesPaidIds, year, meId, meDuesAmount, onPay }) {
   const meIsPaid = duesPaidIds.has(meId);
+  const [showLog, setShowLog] = useState(false);
+
+  if (showLog) return <AuditLogScreen onBack={() => setShowLog(false)} />;
 
   if (isOfficer) {
     const paidCount = members.filter(m => duesPaidIds.has(m.id)).length;
@@ -637,7 +652,12 @@ function DuesScreen({ isOfficer, members, duesPaidIds, year, meId, meDuesAmount,
           )}
         </div>
 
-        <div className="text-xs mb-2" style={{ color: C.inkSoft, ...sans, letterSpacing: "0.08em" }}>CHAPTER-WIDE — {year}</div>
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-xs" style={{ color: C.inkSoft, ...sans, letterSpacing: "0.08em" }}>CHAPTER-WIDE — {year}</div>
+          <button onClick={() => setShowLog(true)} className="text-xs" style={{ color: C.purple, ...sans, textDecoration: "underline" }}>
+            Activity log
+          </button>
+        </div>
         <div className="flex gap-3 mb-5">
           <StatBlock label="Paid" value={paidCount} />
           <StatBlock label="Unpaid" value={members.length - paidCount} />
@@ -697,7 +717,7 @@ function StatBlock({ label, value }) {
   );
 }
 
-function FeedScreen({ feed, onAddPost, member }) {
+function FeedScreen({ feed, onAddPost, member, likes, onToggleLike }) {
   const [caption, setCaption] = useState("");
   const [pendingPhoto, setPendingPhoto] = useState(null);
   const [uploading, setUploading] = useState(false);
@@ -731,24 +751,31 @@ function FeedScreen({ feed, onAddPost, member }) {
           Post
         </button>
       </div>
-      {feed.map(p => (
-        <div key={p.id} className="mb-5 rounded-sm overflow-hidden" style={{ background: "#fff", border: `1px solid ${C.line}` }}>
-          {p.image_url ? (
-            <FeedImage path={p.image_url} />
-          ) : (
-            <div className="h-24 flex items-center justify-center" style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleSoft})` }}>
-              <Camera size={24} color={C.goldSoft} />
-            </div>
-          )}
-          <div className="p-3">
-            <div className="text-sm" style={{ color: C.ink, ...sans }}><b>{p.members?.name ?? "Member"}</b></div>
-            <div className="text-xs mt-1" style={{ color: C.inkSoft, ...sans }}>{p.caption}</div>
-            <div className="flex items-center gap-1 mt-3 text-xs" style={{ color: C.inkSoft, ...sans }}>
-              <Heart size={13} /> 0
+      {feed.map(p => {
+        const like = likes[p.id] || { count: 0, mine: false };
+        return (
+          <div key={p.id} className="mb-5 rounded-sm overflow-hidden" style={{ background: "#fff", border: `1px solid ${C.line}` }}>
+            {p.image_url ? (
+              <FeedImage path={p.image_url} />
+            ) : (
+              <div className="h-24 flex items-center justify-center" style={{ background: `linear-gradient(135deg, ${C.purple}, ${C.purpleSoft})` }}>
+                <Camera size={24} color={C.goldSoft} />
+              </div>
+            )}
+            <div className="p-3">
+              <div className="text-sm" style={{ color: C.ink, ...sans }}><b>{p.members?.name ?? "Member"}</b></div>
+              <div className="text-xs mt-1" style={{ color: C.inkSoft, ...sans }}>{p.caption}</div>
+              <button
+                onClick={() => onToggleLike(p.id)}
+                className="flex items-center gap-1 mt-3 text-xs"
+                style={{ color: like.mine ? "#C0392B" : C.inkSoft, ...sans }}
+              >
+                <Heart size={13} fill={like.mine ? "#C0392B" : "none"} /> {like.count}
+              </button>
             </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -819,7 +846,11 @@ function FeedImage({ path }) {
   }, [path]);
 
   if (!url) return <div className="h-40 w-full flex items-center justify-center" style={{ background: "#F2EEE0" }}><span className="text-xs" style={{ color: C.inkSoft, ...sans }}>Loading…</span></div>;
-  return <img src={url} alt="" className="h-40 w-full object-cover" />;
+  return (
+    <a href={url} target="_blank" rel="noopener noreferrer">
+      <img src={url} alt="" className="h-40 w-full object-cover" />
+    </a>
+  );
 }
 
 function AttachButton({ onFile, accept }) {
@@ -1356,6 +1387,49 @@ function DirectThread({ me, other, onBack }) {
           <Send size={16} color={C.ivory} />
         </button>
       </div>
+    </div>
+  );
+}
+
+function AuditLogScreen({ onBack }) {
+  const [log, setLog] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    supabase
+      .from("audit_log")
+      .select("*, members(name)")
+      .order("created_at", { ascending: false })
+      .limit(100)
+      .then(({ data }) => { setLog(data ?? []); setLoading(false); });
+  }, []);
+
+  const actionLabel = (a) => ({
+    member_added: "Member added",
+    member_removed: "Member removed",
+    dues_paid: "Dues paid",
+    event_added: "Event added",
+    event_edited: "Event edited",
+    event_removed: "Event removed",
+  }[a] || a);
+
+  return (
+    <div className="px-5">
+      <div className="flex items-center gap-2 pb-4 mb-3" style={{ borderBottom: `1px solid ${C.line}` }}>
+        <button onClick={onBack}><ArrowLeft size={18} color={C.inkSoft} /></button>
+        <div className="text-lg" style={{ ...serif, color: C.ink }}>Activity Log</div>
+      </div>
+      {loading && <div className="text-xs" style={{ color: C.inkSoft, ...sans }}>Loading…</div>}
+      {!loading && log.length === 0 && <div className="text-xs" style={{ color: C.inkSoft, ...sans }}>No activity recorded yet.</div>}
+      {log.map(entry => (
+        <div key={entry.id} className="py-3" style={{ borderTop: `1px solid ${C.line}` }}>
+          <div className="text-sm" style={{ color: C.ink, ...sans }}>{actionLabel(entry.action)}</div>
+          <div className="text-xs" style={{ color: C.inkSoft, ...sans }}>{entry.detail}</div>
+          <div className="text-[10px] mt-0.5" style={{ color: C.inkSoft, ...sans }}>
+            {entry.members?.name ?? "System"} · {new Date(entry.created_at).toLocaleString()}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
