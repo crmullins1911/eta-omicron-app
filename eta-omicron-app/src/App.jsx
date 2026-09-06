@@ -420,11 +420,11 @@ function AppShell({ member, tab, setTab }) {
         {tab === "home" && <HomeScreen member={member} events={events} />}
         {tab === "events" && <EventsScreen events={events} rsvpIds={rsvpIds} toggleRsvp={toggleRsvp} isOfficer={member.is_officer} onUpdate={updateEvent} onDelete={deleteEvent} />}
         {tab === "members" && (
-          <MembersScreen members={members} isAdmin={member.is_Admin} duesPaidIds={duesPaidIds} onAdd={() => setShowAddMember(true)} onRemove={removeMember} />
+          <MembersScreen members={members} isOfficer={member.is_officer} duesPaidIds={duesPaidIds} onAdd={() => setShowAddMember(true)} onRemove={removeMember} />
         )}
         {tab === "dues" && (
           <DuesScreen
-            isAdmin={member.is_Admin}
+            isOfficer={member.is_officer}
             members={members}
             duesPaidIds={duesPaidIds}
             year={currentYear}
@@ -466,7 +466,7 @@ function HomeScreen({ member, events }) {
       <div className="rounded-sm p-4 mb-5" style={{ background: C.purple }}>
         <div className="text-xs mb-1" style={{ color: C.goldSoft, ...sans, letterSpacing: "0.1em" }}>CHAPTER HISTORY</div>
         <div className="text-sm leading-relaxed" style={{ color: C.ivory, ...sans }}>
-          Chartered to serve the surrounding community through Manhood, Scholarship, Perseverance, and Uplift.
+          Chartered to serve surrounding community through Manhood, Scholarship, Perseverance, and Uplift.
         </div>
       </div>
       <div className="text-xs mb-2" style={{ color: C.inkSoft, ...sans, letterSpacing: "0.08em" }}>UPCOMING</div>
@@ -483,6 +483,9 @@ function HomeScreen({ member, events }) {
           </div>
         </div>
       ))}
+      <div className="text-[10px] text-center mt-8 mb-2" style={{ color: C.inkSoft, ...sans, opacity: 0.6 }}>
+        Version: {new Date(__BUILD_TIME__).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}
+      </div>
     </div>
   );
 }
