@@ -460,13 +460,15 @@ function ScreenHeader({ title, subtitle, action }) {
 
 function HomeScreen({ member, events }) {
   const upcoming = events.slice(0, 3);
+  const [showFeedback, setShowFeedback] = useState(false);
+
   return (
     <div className="px-5">
       <ScreenHeader title="Eta Omicron" subtitle={`Welcome, ${member.name.split(" ")[0]}`} />
       <div className="rounded-sm p-4 mb-5" style={{ background: C.purple }}>
         <div className="text-xs mb-1" style={{ color: C.goldSoft, ...sans, letterSpacing: "0.1em" }}>CHAPTER HISTORY</div>
         <div className="text-sm leading-relaxed" style={{ color: C.ivory, ...sans }}>
-          Chartered to serve surrounding community through Manhood, Scholarship, Perseverance, and Uplift.
+          Chartered to serve the surrounding community through Manhood, Scholarship, Perseverance, and Uplift.
         </div>
       </div>
       <div className="text-xs mb-2" style={{ color: C.inkSoft, ...sans, letterSpacing: "0.08em" }}>UPCOMING</div>
@@ -483,8 +485,60 @@ function HomeScreen({ member, events }) {
           </div>
         </div>
       ))}
-      <div className="text-[10px] text-center mt-8 mb-2" style={{ color: C.inkSoft, ...sans, opacity: 0.6 }}>
+
+      <button onClick={() => setShowFeedback(true)} className="w-full text-center mt-8 text-xs underline" style={{ color: C.purple, ...sans }}>
+        Send Feedback
+      </button>
+      <div className="text-[10px] text-center mt-2 mb-2" style={{ color: C.inkSoft, ...sans, opacity: 0.6 }}>
         Version: {new Date(__BUILD_TIME__).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}
+      </div>
+
+      {showFeedback && <FeedbackModal memberId={member.id} onClose={() => setShowFeedback(false)} />}
+    </div>
+  );
+}
+
+function FeedbackModal({ memberId, onClose }) {
+  const [message, setMessage] = useState("");
+  const [sent, setSent] = useState(false);
+
+  const submit = async () => {
+    await supabase.from("feedback").insert({ member_id: memberId, message });
+    setSent(true);
+  };
+
+  return (
+    <div className="absolute inset-0 z-30 flex items-end" style={{ background: "rgba(36,21,54,0.55)" }}>
+      <div className="w-full rounded-t-2xl p-5" style={{ background: "#fff" }}>
+        <div className="flex items-center justify-between mb-4">
+          <div className="text-lg" style={{ ...serif, color: C.ink }}>Send Feedback</div>
+          <button onClick={onClose}><X size={18} color={C.inkSoft} /></button>
+        </div>
+        {sent ? (
+          <div className="text-sm" style={{ color: C.inkSoft, ...sans }}>Thanks — this goes straight to the admins.</div>
+        ) : (
+          <>
+            <div className="text-xs mb-3" style={{ color: C.inkSoft, ...sans }}>
+              Bug, idea, or something you wish the app did — this goes straight to the admins.
+            </div>
+            <textarea
+              value={message}
+              onChange={e => setMessage(e.target.value)}
+              rows={4}
+              placeholder="What's on your mind?"
+              className="w-full px-3 py-2 mb-4 rounded-sm text-sm"
+              style={{ border: `1px solid ${C.line}`, ...sans }}
+            />
+            <button
+              disabled={!message.trim()}
+              onClick={submit}
+              className="w-full py-3 rounded-sm font-medium disabled:opacity-40"
+              style={{ background: C.purple, color: C.ivory, ...sans }}
+            >
+              Send
+            </button>
+          </>
+        )}
       </div>
     </div>
   );
@@ -639,8 +693,10 @@ function MembersScreen({ members, isOfficer, duesPaidIds, onAdd, onRemove }) {
 function DuesScreen({ isOfficer, members, duesPaidIds, year, meId, meDuesAmount, onPay }) {
   const meIsPaid = duesPaidIds.has(meId);
   const [showLog, setShowLog] = useState(false);
+  const [showFeedback, setShowFeedback] = useState(false);
 
   if (showLog) return <AuditLogScreen onBack={() => setShowLog(false)} />;
+  if (showFeedback) return <FeedbackReviewScreen onBack={() => setShowFeedback(false)} />;
 
   if (isOfficer) {
     const paidCount = members.filter(m => duesPaidIds.has(m.id)).length;
@@ -667,9 +723,14 @@ function DuesScreen({ isOfficer, members, duesPaidIds, year, meId, meDuesAmount,
 
         <div className="flex items-center justify-between mb-2">
           <div className="text-xs" style={{ color: C.inkSoft, ...sans, letterSpacing: "0.08em" }}>CHAPTER-WIDE — {year}</div>
-          <button onClick={() => setShowLog(true)} className="text-xs" style={{ color: C.purple, ...sans, textDecoration: "underline" }}>
-            Activity log
-          </button>
+          <div className="flex gap-3">
+            <button onClick={() => setShowFeedback(true)} className="text-xs" style={{ color: C.purple, ...sans, textDecoration: "underline" }}>
+              Feedback
+            </button>
+            <button onClick={() => setShowLog(true)} className="text-xs" style={{ color: C.purple, ...sans, textDecoration: "underline" }}>
+              Activity log
+            </button>
+          </div>
         </div>
         <div className="flex gap-3 mb-5">
           <StatBlock label="Paid" value={paidCount} />
@@ -737,7 +798,8 @@ function FeedScreen({ feed, onAddPost, member, likes, onToggleLike }) {
 
   const handlePhoto = async (file) => {
     setUploading(true);
-    const result = await uploadFileToBucket(file, "feed-photos", member.id);
+    const compressed = await compressImage(file);
+    const result = await uploadFileToBucket(compressed, "feed-photos", member.id);
     setUploading(false);
     if (result) setPendingPhoto(result);
   };
@@ -796,6 +858,40 @@ function FeedScreen({ feed, onAddPost, member, likes, onToggleLike }) {
 // ---- Chat attachments ----
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10MB — keeps things well within free-tier storage
+
+async function compressImage(file, maxDimension = 1600, quality = 0.82) {
+  // Skip anything that isn't an image, or is already small — no point
+  // re-encoding a photo that's already a few hundred KB.
+  if (!file.type.startsWith("image/") || file.size < 300 * 1024) return file;
+
+  try {
+    const bitmap = await createImageBitmap(file);
+    let { width, height } = bitmap;
+
+    if (width > maxDimension || height > maxDimension) {
+      if (width > height) {
+        height = Math.round((height * maxDimension) / width);
+        width = maxDimension;
+      } else {
+        width = Math.round((width * maxDimension) / height);
+        height = maxDimension;
+      }
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    canvas.getContext("2d").drawImage(bitmap, 0, 0, width, height);
+
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
+    if (!blob) return file; // fall back to the original if encoding fails for any reason
+
+    const newName = file.name.replace(/\.[^.]+$/, "") + ".jpg";
+    return new File([blob], newName, { type: "image/jpeg" });
+  } catch {
+    return file; // e.g. an unsupported format — safer to upload the original than fail entirely
+  }
+}
 
 async function uploadFileToBucket(file, bucket, folder) {
   if (file.size > MAX_FILE_BYTES) {
@@ -1400,6 +1496,50 @@ function DirectThread({ me, other, onBack }) {
           <Send size={16} color={C.ivory} />
         </button>
       </div>
+    </div>
+  );
+}
+
+function FeedbackReviewScreen({ onBack }) {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = () => supabase
+    .from("feedback")
+    .select("*, members(name)")
+    .order("created_at", { ascending: false })
+    .then(({ data }) => { setItems(data ?? []); setLoading(false); });
+
+  useEffect(() => { load(); }, []);
+
+  const markReviewed = async (id) => {
+    await supabase.from("feedback").update({ status: "reviewed" }).eq("id", id);
+    load();
+  };
+
+  return (
+    <div className="px-5">
+      <div className="flex items-center gap-2 pb-4 mb-3" style={{ borderBottom: `1px solid ${C.line}` }}>
+        <button onClick={onBack}><ArrowLeft size={18} color={C.inkSoft} /></button>
+        <div className="text-lg" style={{ ...serif, color: C.ink }}>Feedback</div>
+      </div>
+      {loading && <div className="text-xs" style={{ color: C.inkSoft, ...sans }}>Loading…</div>}
+      {!loading && items.length === 0 && <div className="text-xs" style={{ color: C.inkSoft, ...sans }}>No feedback submitted yet.</div>}
+      {items.map(item => (
+        <div key={item.id} className="py-3" style={{ borderTop: `1px solid ${C.line}`, opacity: item.status === "reviewed" ? 0.5 : 1 }}>
+          <div className="text-sm" style={{ color: C.ink, ...sans }}>{item.message}</div>
+          <div className="flex items-center justify-between mt-1">
+            <div className="text-[10px]" style={{ color: C.inkSoft, ...sans }}>
+              {item.members?.name ?? "Member"} · {new Date(item.created_at).toLocaleDateString()}
+            </div>
+            {item.status !== "reviewed" && (
+              <button onClick={() => markReviewed(item.id)} className="text-[10px] underline" style={{ color: C.purple, ...sans }}>
+                Mark reviewed
+              </button>
+            )}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
