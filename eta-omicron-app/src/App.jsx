@@ -2,7 +2,7 @@ import React, { useEffect, useState, useRef } from "react";
 import {
   Home, CalendarDays, Users, CircleDollarSign, Images, MessageCircle,
   Plus, Check, Clock, MapPin, X, Camera, Heart, LogOut, ArrowLeft, Send,
-  Paperclip, Download, FileText
+  Paperclip, Download, FileText, Lock
 } from "lucide-react";
 import { supabase, SUPABASE_URL } from "./supabaseClient";
 
@@ -43,6 +43,7 @@ export default function App() {
     new URLSearchParams(window.location.search).get("paid") === "1" ? "dues" : "home"
   );
   const [recoveryMode, setRecoveryMode] = useState(false);
+  const [mfaPending, setMfaPending] = useState(false);
 
   // If we just landed back from Stripe, clean the query string out of the URL
   useEffect(() => {
@@ -60,6 +61,16 @@ export default function App() {
     });
     return () => sub.subscription.unsubscribe();
   }, []);
+
+  // If this account has two-factor enabled, a fresh password sign-in
+  // only grants "aal1" — not enough to actually use the app. Check
+  // whether a code is still required before letting them any further.
+  useEffect(() => {
+    if (!session) { setMfaPending(false); return; }
+    supabase.auth.mfa.getAuthenticatorAssuranceLevel().then(({ data }) => {
+      setMfaPending(!!data && data.currentLevel === "aal1" && data.nextLevel === "aal2");
+    });
+  }, [session]);
 
   // Once logged in, look up this person's member row. If the normal
   // auto-link trigger somehow missed (e.g. an admin added them after
@@ -96,6 +107,7 @@ export default function App() {
 
   if (recoveryMode) return <Frame><ResetPasswordScreen onDone={() => setRecoveryMode(false)} /></Frame>;
   if (!session) return <Frame><LoginScreen /></Frame>;
+  if (mfaPending) return <Frame><MFAChallengeScreen onVerified={() => setMfaPending(false)} /></Frame>;
   if (!memberLookupDone) return <Frame><CenteredNote text="Loading…" /></Frame>;
   if (!member) return <Frame><NotAMemberScreen email={session.user.email} /></Frame>;
 
@@ -137,9 +149,17 @@ function LoginScreen() {
       const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) setError(error.message);
     } else if (mode === "signup") {
-      const { error } = await supabase.auth.signUp({ email, password });
-      if (error) setError(error.message);
-      else setInfo("Password set. If your project requires email confirmation, check your inbox once — after that, just sign in with your password below.");
+      const { data, error } = await supabase.auth.signUp({ email, password });
+      if (error) {
+        setError(error.message);
+      } else if (data?.user && data.user.identities && data.user.identities.length === 0) {
+        // Supabase's standard signal that this email already has an
+        // account — creating "another" one here would just orphan a
+        // second, disconnected login instead of actually helping them in.
+        setError("This email already has a password set. Try Sign In, or use \"Forgot password?\" if you don't remember it.");
+      } else {
+        setInfo("Password set. If your project requires email confirmation, check your inbox once — after that, just sign in with your password below.");
+      }
     } else if (mode === "forgot") {
       const { error } = await supabase.auth.resetPasswordForEmail(email, {
         redirectTo: window.location.origin,
@@ -211,6 +231,179 @@ function LoginScreen() {
 
       {error && <div className="text-xs mt-4" style={{ color: "#E6A5A5" }}>{error}</div>}
       {info && <div className="text-xs mt-4" style={{ color: "#B9DCC3" }}>{info}</div>}
+    </div>
+  );
+}
+
+function MFAChallengeScreen({ onVerified }) {
+  const [code, setCode] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    setError(""); setBusy(true);
+    const { data: factors } = await supabase.auth.mfa.listFactors();
+    const factor = factors?.totp?.find(f => f.status === "verified");
+    if (!factor) { setError("No two-factor method found on this account."); setBusy(false); return; }
+
+    const { data: challenge, error: challengeErr } = await supabase.auth.mfa.challenge({ factorId: factor.id });
+    if (challengeErr) { setError(challengeErr.message); setBusy(false); return; }
+
+    const { error: verifyErr } = await supabase.auth.mfa.verify({
+      factorId: factor.id,
+      challengeId: challenge.id,
+      code,
+    });
+    setBusy(false);
+    if (verifyErr) setError("Incorrect code — try again.");
+    else onVerified();
+  };
+
+  return (
+    <div className="h-full flex flex-col items-center justify-center px-8 text-center" style={{ background: `linear-gradient(180deg, ${C.purpleDeep} 0%, ${C.purple} 100%)` }}>
+      <Lock size={28} color={C.gold} className="mb-4" />
+      <div className="text-xl mb-2" style={{ ...serif, color: C.ivory }}>Enter Your Code</div>
+      <div className="text-sm mb-6" style={{ color: "#D9CDEC", ...sans }}>Open your authenticator app for the 6-digit code.</div>
+      <input
+        value={code}
+        onChange={e => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+        onKeyDown={e => e.key === "Enter" && submit()}
+        placeholder="000000"
+        inputMode="numeric"
+        className="w-full px-3 py-3 mb-3 rounded-sm text-sm text-center tracking-[0.3em]"
+        style={{ ...sans }}
+      />
+      <button
+        onClick={submit}
+        disabled={code.length !== 6 || busy}
+        className="w-full py-3 rounded-sm font-medium disabled:opacity-40"
+        style={{ background: C.gold, color: C.purpleDeep, ...sans }}
+      >
+        {busy ? "Verifying…" : "Verify"}
+      </button>
+      {error && <div className="text-xs mt-4" style={{ color: "#E6A5A5" }}>{error}</div>}
+      <button onClick={() => supabase.auth.signOut()} className="text-xs mt-6" style={{ color: C.goldSoft, ...sans }}>
+        Sign out
+      </button>
+    </div>
+  );
+}
+
+function SecurityScreen({ onBack }) {
+  const [factors, setFactors] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [enrolling, setEnrolling] = useState(null); // { id, qr, secret } or null
+  const [code, setCode] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    const { data } = await supabase.auth.mfa.listFactors();
+    setFactors(data?.totp ?? []);
+    setLoading(false);
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const startEnroll = async () => {
+    setError("");
+    const { data, error } = await supabase.auth.mfa.enroll({ factorType: "totp" });
+    if (error) { setError(error.message); return; }
+    setEnrolling({ id: data.id, qr: data.totp.qr_code, secret: data.totp.secret });
+  };
+
+  const confirmEnroll = async () => {
+    setError(""); setBusy(true);
+    const { data: challenge, error: challengeErr } = await supabase.auth.mfa.challenge({ factorId: enrolling.id });
+    if (challengeErr) { setError(challengeErr.message); setBusy(false); return; }
+
+    const { error: verifyErr } = await supabase.auth.mfa.verify({
+      factorId: enrolling.id,
+      challengeId: challenge.id,
+      code,
+    });
+    setBusy(false);
+    if (verifyErr) { setError("Incorrect code — try again."); return; }
+    setEnrolling(null);
+    setCode("");
+    load();
+  };
+
+  const removeFactor = async (factorId) => {
+    await supabase.auth.mfa.unenroll({ factorId });
+    load();
+  };
+
+  const verifiedFactor = factors.find(f => f.status === "verified");
+
+  return (
+    <div className="px-5">
+      <div className="flex items-center gap-2 pb-4 mb-3" style={{ borderBottom: `1px solid ${C.line}` }}>
+        <button onClick={onBack}><ArrowLeft size={18} color={C.inkSoft} /></button>
+        <div className="text-lg" style={{ ...serif, color: C.ink }}>Two-Factor Security</div>
+      </div>
+
+      {loading && <div className="text-xs" style={{ color: C.inkSoft, ...sans }}>Loading…</div>}
+
+      {!loading && !enrolling && (
+        <>
+          {verifiedFactor ? (
+            <div className="rounded-sm p-4" style={{ background: "#EAF2EC" }}>
+              <div className="flex items-center gap-2 text-sm mb-1" style={{ color: C.green, ...sans }}>
+                <Check size={14} /> Two-factor is enabled
+              </div>
+              <div className="text-xs mb-3" style={{ color: C.inkSoft, ...sans }}>
+                You'll be asked for a code from your authenticator app each time you sign in.
+              </div>
+              <button onClick={() => removeFactor(verifiedFactor.id)} className="text-xs underline" style={{ color: "#A15A3C", ...sans }}>
+                Turn off two-factor
+              </button>
+            </div>
+          ) : (
+            <div className="rounded-sm p-4" style={{ background: C.purple }}>
+              <div className="text-sm mb-2" style={{ color: C.ivory, ...sans }}>
+                Add an extra layer of security using an authenticator app (Google Authenticator, Authy, etc).
+              </div>
+              <button onClick={startEnroll} className="w-full py-2.5 rounded-sm font-medium text-sm" style={{ background: C.gold, color: C.purpleDeep, ...sans }}>
+                Enable Two-Factor
+              </button>
+            </div>
+          )}
+        </>
+      )}
+
+      {enrolling && (
+        <div>
+          <div className="text-sm mb-3" style={{ color: C.ink, ...sans }}>Scan this with your authenticator app:</div>
+          <div className="flex justify-center mb-3">
+            <img src={enrolling.qr} alt="QR code" className="w-40 h-40" />
+          </div>
+          <div className="text-xs mb-4 text-center" style={{ color: C.inkSoft, ...sans }}>
+            Or enter this code manually: <span style={{ fontFamily: "ui-monospace, monospace" }}>{enrolling.secret}</span>
+          </div>
+          <input
+            value={code}
+            onChange={e => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+            placeholder="Enter the 6-digit code"
+            inputMode="numeric"
+            className="w-full px-3 py-3 mb-3 rounded-sm text-sm text-center tracking-[0.3em]"
+            style={{ border: `1px solid ${C.line}`, ...sans }}
+          />
+          <button
+            onClick={confirmEnroll}
+            disabled={code.length !== 6 || busy}
+            className="w-full py-3 rounded-sm font-medium disabled:opacity-40"
+            style={{ background: C.purple, color: C.ivory, ...sans }}
+          >
+            {busy ? "Verifying…" : "Confirm & Enable"}
+          </button>
+          <button onClick={() => { setEnrolling(null); setError(""); }} className="w-full text-center mt-3 text-xs" style={{ color: C.inkSoft, ...sans }}>
+            Cancel
+          </button>
+        </div>
+      )}
+
+      {error && <div className="text-xs mt-4" style={{ color: "#A15A3C" }}>{error}</div>}
     </div>
   );
 }
@@ -461,6 +654,9 @@ function ScreenHeader({ title, subtitle, action }) {
 function HomeScreen({ member, events }) {
   const upcoming = events.slice(0, 3);
   const [showFeedback, setShowFeedback] = useState(false);
+  const [showSecurity, setShowSecurity] = useState(false);
+
+  if (showSecurity) return <SecurityScreen onBack={() => setShowSecurity(false)} />;
 
   return (
     <div className="px-5">
@@ -488,6 +684,9 @@ function HomeScreen({ member, events }) {
 
       <button onClick={() => setShowFeedback(true)} className="w-full text-center mt-8 text-xs underline" style={{ color: C.purple, ...sans }}>
         Send Feedback
+      </button>
+      <button onClick={() => setShowSecurity(true)} className="w-full text-center mt-2 text-xs underline" style={{ color: C.purple, ...sans }}>
+        Two-Factor Security
       </button>
       <div className="text-[10px] text-center mt-2 mb-2" style={{ color: C.inkSoft, ...sans, opacity: 0.6 }}>
         Version: {new Date(__BUILD_TIME__).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}
