@@ -122,6 +122,12 @@ function Frame({ children }) {
   return (
     <div className="w-full min-h-screen flex items-center justify-center py-8" style={{ background: C.purpleDeep }}>
       <div className="relative w-[380px] h-[780px] rounded-[2.5rem] overflow-hidden flex flex-col" style={{ background: C.ivory, boxShadow: "0 30px 80px rgba(0,0,0,0.5)" }}>
+        <img
+          src="/watermark.png"
+          alt=""
+          className="absolute inset-0 m-auto pointer-events-none select-none -z-10"
+          style={{ width: 280, opacity: 0.06 }}
+        />
         <div className="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-6 rounded-b-2xl z-20" style={{ background: C.purpleDeep }} />
         {children}
       </div>
@@ -478,6 +484,8 @@ function AppShell({ member, tab, setTab }) {
   const [rsvpIds, setRsvpIds] = useState(new Set());
   const [feed, setFeed] = useState([]);
   const [duesPaidIds, setDuesPaidIds] = useState(new Set());
+  const [paymentItems, setPaymentItems] = useState([]);
+  const [myItemPayments, setMyItemPayments] = useState(new Set()); // item_ids I've paid
   const [likes, setLikes] = useState({}); // { [postId]: { count, mine } }
   const [showAddMember, setShowAddMember] = useState(false);
   const [notifStatus, setNotifStatus] = useState(
@@ -521,6 +529,10 @@ function AppShell({ member, tab, setTab }) {
     .then(({ data }) => setFeed(data ?? []));
   const loadDues = () => supabase.from("dues_payments").select("member_id").eq("year", currentYear)
     .then(({ data }) => setDuesPaidIds(new Set((data ?? []).map(d => d.member_id))));
+  const loadPaymentItems = () => supabase.from("payment_items").select("*").order("created_at", { ascending: false })
+    .then(({ data }) => setPaymentItems(data ?? []));
+  const loadMyItemPayments = () => supabase.from("item_payments").select("item_id").eq("member_id", member.id)
+    .then(({ data }) => setMyItemPayments(new Set((data ?? []).map(p => p.item_id))));
   const loadLikes = () => supabase.from("post_likes").select("post_id, member_id")
     .then(({ data }) => {
       const map = {};
@@ -533,7 +545,7 @@ function AppShell({ member, tab, setTab }) {
     });
 
   useEffect(() => {
-    loadMembers(); loadEvents(); loadRsvps(); loadFeed(); loadDues(); loadLikes();
+    loadMembers(); loadEvents(); loadRsvps(); loadFeed(); loadDues(); loadLikes(); loadPaymentItems(); loadMyItemPayments();
 
     const channel = supabase
       .channel("feed_live")
@@ -584,15 +596,20 @@ function AppShell({ member, tab, setTab }) {
     loadMembers();
   };
 
-  const payDues = async () => {
+  const startCheckout = async (bodyPayload) => {
     const { data: { session } } = await supabase.auth.getSession();
     const res = await fetch(`${SUPABASE_URL}/functions/v1/create-checkout-session`, {
-      headers: { Authorization: `Bearer ${session.access_token}` },
+      method: "POST",
+      headers: { Authorization: `Bearer ${session.access_token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(bodyPayload),
     });
     const body = await res.json();
     if (body.url) window.location.href = body.url;
     else alert(body.error || "Could not start checkout");
   };
+
+  const payDues = () => startCheckout({ type: "dues" });
+  const payItem = (itemId) => startCheckout({ type: "item", itemId });
 
   const addPost = async (caption, imagePath) => {
     await supabase.from("posts").insert({ author_id: member.id, caption, image_url: imagePath ?? null });
@@ -624,6 +641,10 @@ function AppShell({ member, tab, setTab }) {
             meId={member.id}
             meDuesAmount={member.dues_amount ?? 75}
             onPay={payDues}
+            paymentItems={paymentItems}
+            myItemPayments={myItemPayments}
+            onPayItem={payItem}
+            onReloadItems={loadPaymentItems}
           />
         )}
         {tab === "feed" && <FeedScreen feed={feed} onAddPost={addPost} member={member} likes={likes} onToggleLike={toggleLike} />}
@@ -664,7 +685,7 @@ function HomeScreen({ member, events }) {
       <div className="rounded-sm p-4 mb-5" style={{ background: C.purple }}>
         <div className="text-xs mb-1" style={{ color: C.goldSoft, ...sans, letterSpacing: "0.1em" }}>CHAPTER HISTORY</div>
         <div className="text-sm leading-relaxed" style={{ color: C.ivory, ...sans }}>
-          Chartered to serve the surrounding community through Manhood, Scholarship, Perseverance, and Uplift.
+          Chartered to serve Calhoun County and the surrounding community through Manhood, Scholarship, Perseverance, and Uplift.
         </div>
       </div>
       <div className="text-xs mb-2" style={{ color: C.inkSoft, ...sans, letterSpacing: "0.08em" }}>UPCOMING</div>
@@ -889,13 +910,17 @@ function MembersScreen({ members, isOfficer, duesPaidIds, onAdd, onRemove }) {
   );
 }
 
-function DuesScreen({ isOfficer, members, duesPaidIds, year, meId, meDuesAmount, onPay }) {
+function DuesScreen({ isOfficer, members, duesPaidIds, year, meId, meDuesAmount, onPay, paymentItems, myItemPayments, onPayItem, onReloadItems }) {
   const meIsPaid = duesPaidIds.has(meId);
   const [showLog, setShowLog] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
+  const [showManageItems, setShowManageItems] = useState(false);
 
   if (showLog) return <AuditLogScreen onBack={() => setShowLog(false)} />;
   if (showFeedback) return <FeedbackReviewScreen onBack={() => setShowFeedback(false)} />;
+  if (showManageItems) return <ManagePaymentsScreen items={paymentItems} onBack={() => setShowManageItems(false)} onReload={onReloadItems} />;
+
+  const activeItems = paymentItems.filter(i => i.active);
 
   if (isOfficer) {
     const paidCount = members.filter(m => duesPaidIds.has(m.id)).length;
@@ -921,6 +946,32 @@ function DuesScreen({ isOfficer, members, duesPaidIds, year, meId, meDuesAmount,
         </div>
 
         <div className="flex items-center justify-between mb-2">
+          <div className="text-xs" style={{ color: C.inkSoft, ...sans, letterSpacing: "0.08em" }}>OTHER PAYMENTS</div>
+          <button onClick={() => setShowManageItems(true)} className="text-xs" style={{ color: C.purple, ...sans, textDecoration: "underline" }}>
+            Manage
+          </button>
+        </div>
+        {activeItems.length === 0 && <div className="text-xs mb-5" style={{ color: C.inkSoft, ...sans }}>None right now.</div>}
+        {activeItems.map(item => {
+          const paid = myItemPayments.has(item.id);
+          return (
+            <div key={item.id} className="mb-2 p-3 rounded-sm" style={{ background: "#fff", border: `1px solid ${C.line}` }}>
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-sm" style={{ color: C.ink, ...sans }}>{item.title}</div>
+                  <div className="text-xs" style={{ color: C.inkSoft, ...sans }}>${Number(item.amount).toFixed(2)}</div>
+                </div>
+                {paid ? (
+                  <div className="text-xs px-2 py-1 rounded-sm" style={{ background: "#EAF2EC", color: C.green, ...sans }}>Paid</div>
+                ) : (
+                  <button onClick={() => onPayItem(item.id)} className="text-xs px-3 py-1.5 rounded-sm" style={{ background: C.purple, color: C.ivory, ...sans }}>Pay</button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+
+        <div className="flex items-center justify-between mb-2 mt-5">
           <div className="text-xs" style={{ color: C.inkSoft, ...sans, letterSpacing: "0.08em" }}>CHAPTER-WIDE — {year}</div>
           <div className="flex gap-3">
             <button onClick={() => setShowFeedback(true)} className="text-xs" style={{ color: C.purple, ...sans, textDecoration: "underline" }}>
@@ -962,7 +1013,7 @@ function DuesScreen({ isOfficer, members, duesPaidIds, year, meId, meDuesAmount,
   return (
     <div className="px-5">
       <ScreenHeader title="Dues" subtitle={`${year}`} />
-      <div className="rounded-sm p-5 text-center" style={{ background: C.purple }}>
+      <div className="rounded-sm p-5 text-center mb-5" style={{ background: C.purple }}>
         <div className="text-xs mb-2" style={{ color: C.goldSoft, ...sans, letterSpacing: "0.1em" }}>AMOUNT DUE — {year}</div>
         <div className="text-4xl mb-1" style={{ color: C.ivory, ...serif }}>{meIsPaid ? "$0" : `$${Number(meDuesAmount ?? 75).toFixed(2)}`}</div>
         <div className="text-xs mb-5" style={{ color: "#D9CDEC", ...sans }}>{meIsPaid ? `You're all set for ${year}.` : "Pay securely via Stripe."}</div>
@@ -977,6 +1028,153 @@ function DuesScreen({ isOfficer, members, duesPaidIds, year, meId, meDuesAmount,
           </div>
         )}
       </div>
+
+      {activeItems.length > 0 && (
+        <>
+          <div className="text-xs mb-2" style={{ color: C.inkSoft, ...sans, letterSpacing: "0.08em" }}>OTHER PAYMENTS</div>
+          {activeItems.map(item => {
+            const paid = myItemPayments.has(item.id);
+            return (
+              <div key={item.id} className="mb-2 p-3 rounded-sm" style={{ background: "#fff", border: `1px solid ${C.line}` }}>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm" style={{ color: C.ink, ...sans }}>{item.title}</div>
+                    {item.description && <div className="text-xs" style={{ color: C.inkSoft, ...sans }}>{item.description}</div>}
+                    <div className="text-xs mt-0.5" style={{ color: C.inkSoft, ...sans }}>${Number(item.amount).toFixed(2)}</div>
+                  </div>
+                  {paid ? (
+                    <div className="text-xs px-2 py-1 rounded-sm" style={{ background: "#EAF2EC", color: C.green, ...sans }}>Paid</div>
+                  ) : (
+                    <button onClick={() => onPayItem(item.id)} className="text-xs px-3 py-1.5 rounded-sm" style={{ background: C.purple, color: C.ivory, ...sans }}>Pay</button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </>
+      )}
+    </div>
+  );
+}
+
+function ManagePaymentsScreen({ items, onBack, onReload }) {
+  const [showCreate, setShowCreate] = useState(false);
+  const [viewingItem, setViewingItem] = useState(null); // item object or null
+
+  if (viewingItem) return <ItemPaymentsScreen item={viewingItem} onBack={() => setViewingItem(null)} />;
+
+  const toggleActive = async (item) => {
+    await supabase.from("payment_items").update({ active: !item.active }).eq("id", item.id);
+    onReload();
+  };
+
+  const createItem = async (title, description, amount) => {
+    await supabase.from("payment_items").insert({ title, description, amount });
+    setShowCreate(false);
+    onReload();
+  };
+
+  return (
+    <div className="px-5">
+      <div className="flex items-center justify-between pb-4 mb-3" style={{ borderBottom: `1px solid ${C.line}` }}>
+        <div className="flex items-center gap-2">
+          <button onClick={onBack}><ArrowLeft size={18} color={C.inkSoft} /></button>
+          <div className="text-lg" style={{ ...serif, color: C.ink }}>Manage Payments</div>
+        </div>
+        <button onClick={() => setShowCreate(true)} className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: C.purple }}>
+          <Plus size={16} color={C.ivory} />
+        </button>
+      </div>
+
+      {items.length === 0 && <div className="text-xs" style={{ color: C.inkSoft, ...sans }}>No payment items yet.</div>}
+      {items.map(item => (
+        <div key={item.id} className="mb-2 p-3 rounded-sm" style={{ background: "#fff", border: `1px solid ${C.line}` }}>
+          <button onClick={() => setViewingItem(item)} className="w-full text-left">
+            <div className="text-sm" style={{ color: C.ink, ...sans }}>{item.title}</div>
+            <div className="text-xs" style={{ color: C.inkSoft, ...sans }}>${Number(item.amount).toFixed(2)} · tap to see who's paid</div>
+          </button>
+          <div className="flex items-center justify-between mt-2">
+            <div className="text-[10px] px-2 py-1 rounded-sm" style={item.active
+              ? { background: "#EAF2EC", color: C.green, ...sans }
+              : { background: "#F2EEE0", color: C.inkSoft, ...sans }}>
+              {item.active ? "ACTIVE" : "INACTIVE"}
+            </div>
+            <button onClick={() => toggleActive(item)} className="text-xs underline" style={{ color: C.purple, ...sans }}>
+              {item.active ? "Deactivate" : "Reactivate"}
+            </button>
+          </div>
+        </div>
+      ))}
+
+      {showCreate && <CreatePaymentItemModal onClose={() => setShowCreate(false)} onCreate={createItem} />}
+    </div>
+  );
+}
+
+function CreatePaymentItemModal({ onClose, onCreate }) {
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [amount, setAmount] = useState("");
+
+  return (
+    <div className="absolute inset-0 z-30 flex items-end" style={{ background: "rgba(36,21,54,0.55)" }}>
+      <div className="w-full rounded-t-2xl p-5" style={{ background: "#fff" }}>
+        <div className="flex items-center justify-between mb-4">
+          <div className="text-lg" style={{ ...serif, color: C.ink }}>New Payment</div>
+          <button onClick={onClose}><X size={18} color={C.inkSoft} /></button>
+        </div>
+        <label className="text-xs" style={{ color: C.inkSoft, ...sans }}>Title</label>
+        <input value={title} onChange={e => setTitle(e.target.value)} placeholder="e.g. Founders' Day Cookout" className="w-full mt-1 mb-3 px-3 py-2 rounded-sm text-sm" style={{ border: `1px solid ${C.line}`, ...sans }} />
+        <label className="text-xs" style={{ color: C.inkSoft, ...sans }}>Description (optional)</label>
+        <input value={description} onChange={e => setDescription(e.target.value)} placeholder="Shown to members" className="w-full mt-1 mb-3 px-3 py-2 rounded-sm text-sm" style={{ border: `1px solid ${C.line}`, ...sans }} />
+        <label className="text-xs" style={{ color: C.inkSoft, ...sans }}>Amount ($)</label>
+        <input value={amount} onChange={e => setAmount(e.target.value.replace(/[^0-9.]/g, ""))} placeholder="25.00" inputMode="decimal" className="w-full mt-1 mb-5 px-3 py-2 rounded-sm text-sm" style={{ border: `1px solid ${C.line}`, ...sans }} />
+        <button
+          disabled={!title.trim() || !amount}
+          onClick={() => onCreate(title, description, Number(amount))}
+          className="w-full py-3 rounded-sm font-medium disabled:opacity-40"
+          style={{ background: C.purple, color: C.ivory, ...sans }}
+        >
+          Create
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ItemPaymentsScreen({ item, onBack }) {
+  const [payments, setPayments] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    supabase
+      .from("item_payments")
+      .select("*, members(name)")
+      .eq("item_id", item.id)
+      .order("paid_at", { ascending: false })
+      .then(({ data }) => { setPayments(data ?? []); setLoading(false); });
+  }, [item.id]);
+
+  const total = payments.reduce((sum, p) => sum + Number(p.amount), 0);
+
+  return (
+    <div className="px-5">
+      <div className="flex items-center gap-2 pb-4 mb-3" style={{ borderBottom: `1px solid ${C.line}` }}>
+        <button onClick={onBack}><ArrowLeft size={18} color={C.inkSoft} /></button>
+        <div className="text-lg" style={{ ...serif, color: C.ink }}>{item.title}</div>
+      </div>
+      <div className="flex gap-3 mb-5">
+        <StatBlock label="Paid" value={payments.length} />
+        <StatBlock label="Collected" value={`$${total.toFixed(0)}`} />
+      </div>
+      {loading && <div className="text-xs" style={{ color: C.inkSoft, ...sans }}>Loading…</div>}
+      {!loading && payments.length === 0 && <div className="text-xs" style={{ color: C.inkSoft, ...sans }}>Nobody's paid yet.</div>}
+      {payments.map(p => (
+        <div key={p.id} className="flex items-center justify-between py-2" style={{ borderTop: `1px solid ${C.line}` }}>
+          <div className="text-sm" style={{ color: C.ink, ...sans }}>{p.members?.name ?? "Member"}</div>
+          <div className="text-xs" style={{ color: C.inkSoft, ...sans }}>${Number(p.amount).toFixed(2)}</div>
+        </div>
+      ))}
     </div>
   );
 }
