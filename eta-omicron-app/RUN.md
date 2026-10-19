@@ -52,3 +52,31 @@ app signed in.
 - **Pay Dues does nothing** — check the Network tab in dev tools for the
   call to `create-checkout-session`; if it 401s, your Supabase session
   may have expired — sign out and back in.
+
+## Command Center stats
+
+`supabase/functions/command-center-stats` gives Neil's Command Center the chapter's numbers
+(members, dues paid this year, upcoming events, posts in the last 30 days, and the roster's growth).
+It returns counts only: no names, emails or messages. It answers only when sent the shared
+`STATS_TOKEN` (the same value as in the Command Center's `.env`).
+
+**Deploy it from the Supabase dashboard (no CLI needed)**
+1. **Edge Functions → Deploy a new function → Via Editor.** Name it `command-center-stats`,
+   replace the sample code with the contents of `supabase/functions/command-center-stats/index.ts`,
+   and deploy.
+2. Open the function's **Details** (or settings) and turn **Verify JWT / Enforce JWT verification** off.
+   The function checks its own token instead; with JWT on, the Command Center gets a 401.
+3. **Edge Functions → Secrets** (or Project Settings → Edge Functions): add `STATS_TOKEN` with the
+   same value as the Command Center's.
+
+**Or with the Supabase CLI**, from the folder that holds your `supabase/` project:
+```bash
+supabase secrets set STATS_TOKEN=the-shared-value
+supabase functions deploy command-center-stats --no-verify-jwt
+```
+
+**Then in the Command Center**, add this to the Chapter app line in `data/projects.json`
+(your project URL is `VITE_SUPABASE_URL`):
+```json
+"stats": "https://YOUR-PROJECT.supabase.co/functions/v1/command-center-stats"
+```
