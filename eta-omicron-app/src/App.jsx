@@ -776,7 +776,14 @@ function EventsScreen({ events, rsvpIds, toggleRsvp, isOfficer, onUpdate, onDele
         return (
           <div key={e.id} className="mb-3 p-4 rounded-sm" style={{ background: "#fff", borderTop: `3px solid ${going ? C.green : C.gold}` }}>
             <div className="flex items-start justify-between">
-              <div className="text-base" style={{ color: C.ink, ...serif }}>{e.title}</div>
+              <div>
+                <div className="text-base" style={{ color: C.ink, ...serif }}>{e.title}</div>
+                {isOfficer && "on_website" in e && (
+                  <div className="text-[10px] mt-0.5 uppercase tracking-wide" style={{ color: e.on_website ? C.green : C.inkSoft, ...sans }}>
+                    {e.on_website ? "On public website" : "Members only"}
+                  </div>
+                )}
+              </div>
               {isOfficer && (
                 <div className="flex gap-1 shrink-0">
                   <button onClick={() => setEditing(e)} className="text-[10px] px-2 py-1 rounded-sm" style={{ background: C.ivory, color: C.inkSoft, ...sans }}>Edit</button>
@@ -828,6 +835,8 @@ function EditEventModal({ event, onClose, onSave }) {
   const [date, setDate] = useState(event.event_date);
   const [time, setTime] = useState(event.event_time || "");
   const [location, setLocation] = useState(event.location || "");
+  const [description, setDescription] = useState(event.description || "");
+  const [onWebsite, setOnWebsite] = useState(Boolean(event.on_website));
 
   return (
     <div className="absolute inset-0 z-30 flex items-end" style={{ background: "rgba(36,21,54,0.55)" }}>
@@ -843,9 +852,25 @@ function EditEventModal({ event, onClose, onSave }) {
         <label className="text-xs" style={{ color: C.inkSoft, ...sans }}>Time</label>
         <input value={time} onChange={e => setTime(e.target.value)} placeholder="e.g. 7:00 PM" className="w-full mt-1 mb-3 px-3 py-2 rounded-sm text-sm" style={{ border: `1px solid ${C.line}`, ...sans }} />
         <label className="text-xs" style={{ color: C.inkSoft, ...sans }}>Location</label>
-        <input value={location} onChange={e => setLocation(e.target.value)} className="w-full mt-1 mb-5 px-3 py-2 rounded-sm text-sm" style={{ border: `1px solid ${C.line}`, ...sans }} />
+        <input value={location} onChange={e => setLocation(e.target.value)} className="w-full mt-1 mb-3 px-3 py-2 rounded-sm text-sm" style={{ border: `1px solid ${C.line}`, ...sans }} />
+        {"description" in event && <>
+        <label className="text-xs" style={{ color: C.inkSoft, ...sans }}>Description (shown on the public website)</label>
+        <textarea value={description} onChange={e => setDescription(e.target.value)} rows={2} className="w-full mt-1 mb-3 px-3 py-2 rounded-sm text-sm" style={{ border: `1px solid ${C.line}`, ...sans }} />
+        </>}
+        {"on_website" in event && <label className="flex items-center justify-between gap-3 mb-5 px-3 py-3 rounded-sm cursor-pointer" style={{ background: C.ivory, ...sans }}>
+          <span>
+            <span className="block text-sm" style={{ color: C.ink }}>Show on public website</span>
+            <span className="block text-[11px]" style={{ color: C.inkSoft }}>Visitors to etaomicron.org will see this event.</span>
+          </span>
+          <input type="checkbox" checked={onWebsite} onChange={e => setOnWebsite(e.target.checked)} className="w-5 h-5 shrink-0" style={{ accentColor: C.purple }} />
+        </label>}
         <button
-          onClick={() => onSave({ title, event_date: date, event_time: time, location })}
+          onClick={() => onSave({
+            title, event_date: date, event_time: time, location,
+            // Only send columns the events table actually has (they arrive with the event row).
+            ...("description" in event ? { description } : {}),
+            ...("on_website" in event ? { on_website: onWebsite } : {}),
+          })}
           className="w-full py-3 rounded-sm font-medium"
           style={{ background: C.purple, color: C.ivory, ...sans }}
         >
