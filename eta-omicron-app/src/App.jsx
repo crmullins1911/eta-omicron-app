@@ -611,6 +611,13 @@ function AppShell({ member, tab, setTab }) {
   const payDues = () => startCheckout({ type: "dues" });
   const payItem = (itemId) => startCheckout({ type: "item", itemId });
 
+  // Officers choose which feed posts also appear on the public website's News page.
+  const togglePostOnWebsite = async (post) => {
+    const { error } = await supabase.from("posts").update({ on_website: !post.on_website }).eq("id", post.id);
+    if (error) alert("Couldn't update the website setting for this post. Ask the webmaster to run the website-sharing database update.");
+    loadFeed();
+  };
+
   const addPost = async (caption, imagePath) => {
     await supabase.from("posts").insert({ author_id: member.id, caption, image_url: imagePath ?? null });
     loadFeed();
@@ -647,7 +654,7 @@ function AppShell({ member, tab, setTab }) {
             onReloadItems={loadPaymentItems}
           />
         )}
-        {tab === "feed" && <FeedScreen feed={feed} onAddPost={addPost} member={member} likes={likes} onToggleLike={toggleLike} />}
+        {tab === "feed" && <FeedScreen feed={feed} onAddPost={addPost} member={member} likes={likes} onToggleLike={toggleLike} isOfficer={member.is_officer} onToggleWebsite={togglePostOnWebsite} />}
         {tab === "messages" && <MessagesScreen member={member} members={members} />}
       </div>
 
@@ -1213,7 +1220,7 @@ function StatBlock({ label, value }) {
   );
 }
 
-function FeedScreen({ feed, onAddPost, member, likes, onToggleLike }) {
+function FeedScreen({ feed, onAddPost, member, likes, onToggleLike, isOfficer, onToggleWebsite }) {
   const [caption, setCaption] = useState("");
   const [pendingPhoto, setPendingPhoto] = useState(null);
   const [uploading, setUploading] = useState(false);
@@ -1262,13 +1269,26 @@ function FeedScreen({ feed, onAddPost, member, likes, onToggleLike }) {
             <div className="p-3">
               <div className="text-sm" style={{ color: C.ink, ...sans }}><b>{p.members?.name ?? "Member"}</b></div>
               <div className="text-xs mt-1" style={{ color: C.inkSoft, ...sans }}>{p.caption}</div>
-              <button
-                onClick={() => onToggleLike(p.id)}
-                className="flex items-center gap-1 mt-3 text-xs"
-                style={{ color: like.mine ? "#C0392B" : C.inkSoft, ...sans }}
-              >
-                <Heart size={13} fill={like.mine ? "#C0392B" : "none"} /> {like.count}
-              </button>
+              <div className="flex items-center justify-between mt-3">
+                <button
+                  onClick={() => onToggleLike(p.id)}
+                  className="flex items-center gap-1 text-xs"
+                  style={{ color: like.mine ? "#C0392B" : C.inkSoft, ...sans }}
+                >
+                  <Heart size={13} fill={like.mine ? "#C0392B" : "none"} /> {like.count}
+                </button>
+                {isOfficer && "on_website" in p && (
+                  <button
+                    onClick={() => onToggleWebsite(p)}
+                    className="text-[11px] px-2.5 py-1 rounded-sm"
+                    style={p.on_website
+                      ? { background: "#EAF2EC", color: C.green, ...sans }
+                      : { background: C.ivory, color: C.inkSoft, ...sans }}
+                  >
+                    {p.on_website ? "✓ On website" : "Share to website"}
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         );
