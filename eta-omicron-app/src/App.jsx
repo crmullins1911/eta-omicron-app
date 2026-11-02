@@ -695,6 +695,7 @@ function HomeScreen({ member, events }) {
           Chartered to serve Calhoun County and the surrounding community through Manhood, Scholarship, Perseverance, and Uplift.
         </div>
       </div>
+      <TicketsOnSale limit={2} />
       <div className="text-xs mb-2" style={{ color: C.inkSoft, ...sans, letterSpacing: "0.08em" }}>UPCOMING</div>
       {upcoming.length === 0 && <div className="text-xs" style={{ color: C.inkSoft, ...sans }}>No events yet.</div>}
       {upcoming.map(e => (
@@ -771,6 +772,59 @@ function FeedbackModal({ memberId, onClose }) {
   );
 }
 
+// Events with tickets on sale, live from the ticketing app (tickets.etaomicron.org, on the VPS).
+// Officers publish them there; they appear here automatically. Renders nothing if none are on sale
+// or the ticket site can't be reached.
+const TICKETS_URL = "https://tickets.etaomicron.org";
+
+function TicketsOnSale({ limit }) {
+  const [list, setList] = useState([]);
+
+  useEffect(() => {
+    let alive = true;
+    fetch(`${TICKETS_URL}/api/events`)
+      .then(r => (r.ok ? r.json() : []))
+      .then(data => alive && setList(data))
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+
+  const shown = limit ? list.slice(0, limit) : list;
+  if (shown.length === 0) return null;
+
+  const price = c => (c == null ? "Brothers only" : c === 0 ? "Free" : `From $${(c / 100).toFixed(c % 100 ? 2 : 0)}`);
+
+  return (
+    <div className="mb-5">
+      <div className="text-xs mb-2" style={{ color: C.inkSoft, ...sans, letterSpacing: "0.08em" }}>TICKETS ON SALE</div>
+      {shown.map(e => {
+        const d = new Date(e.starts_at);
+        return (
+          <a
+            key={e.id}
+            href={e.url}
+            target="_blank"
+            rel="noreferrer"
+            className="mb-2 p-4 rounded-sm flex items-center gap-3"
+            style={{ background: C.purple, textDecoration: "none" }}
+          >
+            <div className="w-11 h-11 flex flex-col items-center justify-center rounded-sm shrink-0" style={{ background: C.ivory, border: `1px solid ${C.gold}` }}>
+              <div className="text-[10px] leading-none" style={{ color: C.inkSoft, ...sans }}>{d.toLocaleDateString(undefined, { month: "short" })}</div>
+              <div className="text-sm leading-none mt-0.5" style={{ color: C.ink, ...serif }}>{d.getDate()}</div>
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="text-base" style={{ color: C.ivory, ...serif }}>{e.title}</div>
+              <div className="text-xs" style={{ color: C.goldSoft, ...sans }}>
+                {e.sold_out ? "Sold out" : `${price(e.from_price_cents)} · Get tickets`}
+              </div>
+            </div>
+          </a>
+        );
+      })}
+    </div>
+  );
+}
+
 function EventsScreen({ events, rsvpIds, toggleRsvp, isOfficer, onUpdate, onDelete }) {
   const [editing, setEditing] = useState(null); // event object or null
   const [confirmDelete, setConfirmDelete] = useState(null); // event object or null
@@ -778,6 +832,7 @@ function EventsScreen({ events, rsvpIds, toggleRsvp, isOfficer, onUpdate, onDele
   return (
     <div className="px-5">
       <ScreenHeader title="Events" subtitle="Chapter calendar" />
+      <TicketsOnSale />
       {events.map(e => {
         const going = rsvpIds.has(e.id);
         return (
