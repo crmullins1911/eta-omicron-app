@@ -5,6 +5,7 @@ import {
   Paperclip, Download, FileText, Lock
 } from "lucide-react";
 import { supabase, SUPABASE_URL } from "./supabaseClient";
+import { DUES_SCHEDULE, DEFAULT_DUES, duesCategoryFor, money } from "./dues";
 
 // Public key only — safe to embed in client code, it's the whole point
 // of VAPID (the private key that actually signs pushes stays server-side).
@@ -609,6 +610,13 @@ function AppShell({ member, tab, setTab }) {
   };
 
   const payDues = () => startCheckout({ type: "dues" });
+
+  // Officers set a brother's dues category; Stripe charges members.dues_amount.
+  const setMemberDues = async (memberId, amount) => {
+    const { error } = await supabase.from("members").update({ dues_amount: amount }).eq("id", memberId);
+    if (error) alert("Couldn't update dues: " + error.message);
+    loadMembers();
+  };
   const payItem = (itemId) => startCheckout({ type: "item", itemId });
 
   // Officers choose which feed posts also appear on the public website's News page.
@@ -646,8 +654,9 @@ function AppShell({ member, tab, setTab }) {
             duesPaidIds={duesPaidIds}
             year={currentYear}
             meId={member.id}
-            meDuesAmount={member.dues_amount ?? 75}
+            meDuesAmount={member.dues_amount ?? DEFAULT_DUES}
             onPay={payDues}
+            onSetDues={setMemberDues}
             paymentItems={paymentItems}
             myItemPayments={myItemPayments}
             onPayItem={payItem}
@@ -997,7 +1006,8 @@ function MembersScreen({ members, isOfficer, duesPaidIds, onAdd, onRemove }) {
   );
 }
 
-function DuesScreen({ isOfficer, members, duesPaidIds, year, meId, meDuesAmount, onPay, paymentItems, myItemPayments, onPayItem, onReloadItems }) {
+function DuesScreen({ isOfficer, members, duesPaidIds, year, meId, meDuesAmount, onPay, onSetDues, paymentItems, myItemPayments, onPayItem, onReloadItems }) {
+  const meCategory = duesCategoryFor(meDuesAmount);
   const meIsPaid = duesPaidIds.has(meId);
   const [showLog, setShowLog] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
@@ -1011,7 +1021,7 @@ function DuesScreen({ isOfficer, members, duesPaidIds, year, meId, meDuesAmount,
 
   if (isOfficer) {
     const paidCount = members.filter(m => duesPaidIds.has(m.id)).length;
-    const total = paidCount * Number(meDuesAmount ?? 75);
+    const total = members.filter(m => duesPaidIds.has(m.id)).reduce((sum, m) => sum + Number(m.dues_amount ?? DEFAULT_DUES), 0);
     return (
       <div className="px-5">
         <ScreenHeader title="Dues" subtitle={`${year} — Chapter-wide status`} />
@@ -1024,7 +1034,8 @@ function DuesScreen({ isOfficer, members, duesPaidIds, year, meId, meDuesAmount,
             </div>
           ) : (
             <>
-              <div className="text-2xl mb-2" style={{ color: C.ivory, ...serif }}>${Number(meDuesAmount ?? 75).toFixed(2)} due</div>
+              <div className="text-2xl" style={{ color: C.ivory, ...serif }}>{money(meDuesAmount)} due</div>
+              <div className="text-xs mb-3" style={{ color: "#D9CDEC", ...sans }}>{meCategory ? `${meCategory.label} (${meCategory.code})` : "Custom amount"}</div>
               <button onClick={onPay} className="w-full py-2.5 rounded-sm font-medium text-sm" style={{ background: C.gold, color: C.purpleDeep, ...sans }}>
                 Pay Dues
               </button>
@@ -1078,11 +1089,20 @@ function DuesScreen({ isOfficer, members, duesPaidIds, year, meId, meDuesAmount,
           const paid = duesPaidIds.has(m.id);
           return (
             <div key={m.id} className="flex items-center justify-between py-3" style={{ borderTop: `1px solid ${C.line}` }}>
-              <div>
+              <div className="min-w-0 pr-2">
                 <div className="text-sm" style={{ color: C.ink, ...sans }}>{m.name}</div>
-                <div className="text-xs" style={{ color: C.inkSoft, ...sans }}>{m.role}</div>
+                <select
+                  value={duesCategoryFor(m.dues_amount ?? DEFAULT_DUES)?.annual ?? ""}
+                  onChange={e => onSetDues(m.id, Number(e.target.value))}
+                  className="text-xs mt-1 py-0.5 rounded-sm max-w-full"
+                  style={{ color: C.inkSoft, background: "transparent", border: `1px solid ${C.line}`, ...sans }}
+                  aria-label={`Dues category for ${m.name}`}
+                >
+                  {!duesCategoryFor(m.dues_amount ?? DEFAULT_DUES) && <option value="" disabled>Custom · {money(m.dues_amount)}</option>}
+                  {DUES_SCHEDULE.map(c => <option key={c.code} value={c.annual}>{c.code} · {money(c.annual)}</option>)}
+                </select>
               </div>
-              <div className="text-xs px-2 py-1 rounded-sm" style={paid
+              <div className="text-xs px-2 py-1 rounded-sm shrink-0" style={paid
                 ? { background: "#EAF2EC", color: C.green, ...sans }
                 : { background: "#F7E9E4", color: "#A15A3C", ...sans }}>
                 {paid ? "Paid" : "Unpaid"}
@@ -1091,8 +1111,9 @@ function DuesScreen({ isOfficer, members, duesPaidIds, year, meId, meDuesAmount,
           );
         })}
         <div className="text-xs mt-4 leading-relaxed" style={{ color: C.inkSoft, ...sans }}>
-          Dues are tracked per calendar year — everyone starts back at "unpaid" automatically each January, with prior years kept on record.
+          Dues are tracked per calendar year — everyone starts back at "unpaid" automatically each January, with prior years kept on record. Set each brother's category above; his Pay Dues amount follows it.
         </div>
+        <DuesScheduleCard highlight={null} />
       </div>
     );
   }
@@ -1102,8 +1123,11 @@ function DuesScreen({ isOfficer, members, duesPaidIds, year, meId, meDuesAmount,
       <ScreenHeader title="Dues" subtitle={`${year}`} />
       <div className="rounded-sm p-5 text-center mb-5" style={{ background: C.purple }}>
         <div className="text-xs mb-2" style={{ color: C.goldSoft, ...sans, letterSpacing: "0.1em" }}>AMOUNT DUE — {year}</div>
-        <div className="text-4xl mb-1" style={{ color: C.ivory, ...serif }}>{meIsPaid ? "$0" : `$${Number(meDuesAmount ?? 75).toFixed(2)}`}</div>
-        <div className="text-xs mb-5" style={{ color: "#D9CDEC", ...sans }}>{meIsPaid ? `You're all set for ${year}.` : "Pay securely via Stripe."}</div>
+        <div className="text-4xl mb-1" style={{ color: C.ivory, ...serif }}>{meIsPaid ? "$0" : money(meDuesAmount)}</div>
+        <div className="text-xs mb-1" style={{ color: C.goldSoft, ...sans }}>{meCategory ? `${meCategory.label} (${meCategory.code})` : "Custom amount"}</div>
+        <div className="text-xs mb-5" style={{ color: "#D9CDEC", ...sans }}>
+          {meIsPaid ? `You're all set for ${year}.` : `Pay securely via Stripe${meCategory ? `, or ${money(meCategory.cashApp)} by CashApp/PayPal` : ""}.`}
+        </div>
         {!meIsPaid && (
           <button onClick={onPay} className="w-full py-3 rounded-sm font-medium" style={{ background: C.gold, color: C.purpleDeep, ...sans }}>
             Pay Dues
@@ -1140,6 +1164,38 @@ function DuesScreen({ isOfficer, members, duesPaidIds, year, meId, meDuesAmount,
           })}
         </>
       )}
+
+      <DuesScheduleCard highlight={meCategory?.code} />
+    </div>
+  );
+}
+
+function DuesScheduleCard({ highlight }) {
+  return (
+    <div className="mt-5 mb-4">
+      <div className="text-xs mb-2" style={{ color: C.inkSoft, ...sans, letterSpacing: "0.08em" }}>DUES SCHEDULE</div>
+      <div className="rounded-sm overflow-hidden" style={{ background: "#fff", border: `1px solid ${C.line}` }}>
+        <div className="grid grid-cols-[1fr_auto_auto] gap-x-3 px-3 py-2 text-[10px]" style={{ color: C.inkSoft, background: C.ivory, ...sans, letterSpacing: "0.06em" }}>
+          <div>CATEGORY</div><div className="text-right">ANNUAL</div><div className="text-right">CASHAPP / PAYPAL</div>
+        </div>
+        {DUES_SCHEDULE.map(c => {
+          const mine = c.code === highlight;
+          return (
+            <div key={c.code} className="grid grid-cols-[1fr_auto_auto] gap-x-3 px-3 py-2 text-xs items-center"
+              style={{ borderTop: `1px solid ${C.line}`, background: mine ? "#F3EEDD" : "transparent", ...sans }}>
+              <div style={{ color: C.ink }}>
+                <span style={{ fontWeight: mine ? 600 : 500 }}>{c.code}</span>
+                <span className="block text-[10px]" style={{ color: C.inkSoft }}>{c.label}{mine ? " · your category" : ""}</span>
+              </div>
+              <div className="text-right" style={{ color: C.ink }}>{money(c.annual)}</div>
+              <div className="text-right" style={{ color: C.inkSoft }}>{money(c.cashApp)}</div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="text-[11px] mt-2 leading-relaxed" style={{ color: C.inkSoft, ...sans }}>
+        The annual amount is what Pay Dues charges. Paying by CashApp or PayPal? Send the CashApp/PayPal amount, which covers the processing fee.
+      </div>
     </div>
   );
 }
