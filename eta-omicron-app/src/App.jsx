@@ -121,15 +121,17 @@ export default function App() {
 
 function Frame({ children }) {
   return (
-    <div className="w-full min-h-screen flex items-center justify-center py-8" style={{ background: C.purpleDeep }}>
-      <div className="relative w-[380px] h-[780px] rounded-[2.5rem] overflow-hidden flex flex-col" style={{ background: C.ivory, boxShadow: "0 30px 80px rgba(0,0,0,0.5)" }}>
+    // On a phone (or the installed home-screen app) this fills the whole
+    // screen. On a laptop/desktop it keeps the centered phone-style frame.
+    <div className="w-full h-[100dvh] sm:h-auto sm:min-h-screen flex items-center justify-center sm:py-8" style={{ background: C.purpleDeep }}>
+      <div className="relative w-full h-full sm:w-[380px] sm:h-[780px] sm:rounded-[2.5rem] sm:shadow-[0_30px_80px_rgba(0,0,0,0.5)] overflow-hidden flex flex-col" style={{ background: C.ivory }}>
         <img
           src="/watermark.png"
           alt=""
           className="absolute inset-0 m-auto pointer-events-none select-none -z-10"
           style={{ width: 280, opacity: 0.06 }}
         />
-        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-6 rounded-b-2xl z-20" style={{ background: C.purpleDeep }} />
+        <div className="hidden sm:block absolute top-0 left-1/2 -translate-x-1/2 w-32 h-6 rounded-b-2xl z-20" style={{ background: C.purpleDeep }} />
         {children}
       </div>
     </div>
@@ -633,7 +635,8 @@ function AppShell({ member, tab, setTab }) {
 
   return (
     <>
-      <div className="flex-1 overflow-y-auto pt-9 pb-2">
+      <div className="flex-1 overflow-y-auto pt-[max(1rem,env(safe-area-inset-top))] sm:pt-9 pb-2">
+        <InstallPrompt />
         {notifStatus === "default" && (
           <div className="mx-5 mb-3 p-3 rounded-sm flex items-center justify-between gap-3" style={{ background: C.purple }}>
             <div className="text-xs" style={{ color: C.ivory, ...sans }}>Get notified about new messages</div>
@@ -671,6 +674,125 @@ function AppShell({ member, tab, setTab }) {
 
       {showAddMember && <AddMemberModal onClose={() => setShowAddMember(false)} onAdd={addMember} />}
     </>
+  );
+}
+
+// ---- Install-to-home-screen prompt ----
+
+const INSTALL_DISMISS_KEY = "eo-install-dismissed-at";
+const INSTALL_SNOOZE_DAYS = 14;
+
+function isRunningInstalled() {
+  return window.matchMedia?.("(display-mode: standalone)").matches || window.navigator.standalone === true;
+}
+
+function installPlatform() {
+  const ua = navigator.userAgent || "";
+  // iPadOS reports itself as a Mac, so also check for touch support.
+  const isIOS = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+  if (isIOS) {
+    // Only Safari can add a web app to the iPhone home screen in a way
+    // that supports notifications, so steer Chrome/Facebook/etc. users there.
+    const isSafari = !/CriOS|FxiOS|EdgiOS|OPiOS|FBAN|FBAV|Instagram|Line\//.test(ua);
+    return isSafari ? "ios-safari" : "ios-other";
+  }
+  if (/Android/.test(ua)) return "android";
+  return "other";
+}
+
+function InstallPrompt() {
+  const [deferred, setDeferred] = useState(() => window.__eoInstallPrompt || null);
+  const [hidden, setHidden] = useState(() => {
+    if (isRunningInstalled()) return true;
+    try {
+      const at = Number(localStorage.getItem(INSTALL_DISMISS_KEY) || 0);
+      return at && Date.now() - at < INSTALL_SNOOZE_DAYS * 864e5;
+    } catch { return false; }
+  });
+  const [showSteps, setShowSteps] = useState(false);
+  const platform = installPlatform();
+
+  useEffect(() => {
+    const onReady = () => setDeferred(window.__eoInstallPrompt || null);
+    const onInstalled = () => setHidden(true);
+    window.addEventListener("eo-install-ready", onReady);
+    window.addEventListener("appinstalled", onInstalled);
+    return () => {
+      window.removeEventListener("eo-install-ready", onReady);
+      window.removeEventListener("appinstalled", onInstalled);
+    };
+  }, []);
+
+  if (hidden) return null;
+  // Desktop browsers without an install option: nothing useful to offer.
+  if (platform === "other" && !deferred) return null;
+
+  const dismiss = () => {
+    try { localStorage.setItem(INSTALL_DISMISS_KEY, String(Date.now())); } catch { /* storage unavailable */ }
+    setHidden(true);
+  };
+
+  const install = async () => {
+    if (deferred) {
+      deferred.prompt();
+      const { outcome } = await deferred.userChoice;
+      window.__eoInstallPrompt = null;
+      setDeferred(null);
+      if (outcome === "accepted") setHidden(true);
+    } else {
+      setShowSteps(s => !s);
+    }
+  };
+
+  const headline =
+    platform === "ios-other" ? "Open in Safari to install the app" : "Add Eta Omicron to your home screen";
+  const sub =
+    platform.startsWith("ios")
+      ? "One tap to open, full screen — and it's required for notifications on iPhone."
+      : "One tap to open, full screen, like a regular app.";
+
+  return (
+    <div className="mx-5 mb-3 p-3 rounded-sm relative" style={{ background: C.purpleDeep, border: `1px solid ${C.gold}` }}>
+      <button onClick={dismiss} aria-label="Not now" className="absolute top-2 right-2 p-1">
+        <X size={14} color={C.goldSoft} />
+      </button>
+      <div className="flex items-center gap-3 pr-5">
+        <img src="/icon-192.png" alt="" className="w-10 h-10 rounded-md shrink-0" />
+        <div className="flex-1 min-w-0">
+          <div className="text-sm" style={{ color: C.ivory, ...serif }}>{headline}</div>
+          <div className="text-[11px] leading-snug mt-0.5" style={{ color: C.goldSoft, ...sans }}>{sub}</div>
+        </div>
+        {platform !== "ios-other" && (
+          <button onClick={install} className="text-xs px-3 py-1.5 rounded-sm shrink-0" style={{ background: C.gold, color: C.purpleDeep, ...sans }}>
+            {deferred ? "Install" : showSteps ? "Hide" : "How"}
+          </button>
+        )}
+      </div>
+
+      {(showSteps || platform === "ios-other") && (
+        <ol className="mt-3 ml-1 space-y-1.5 text-xs list-decimal list-inside" style={{ color: C.ivory, ...sans }}>
+          {platform === "ios-other" && (
+            <>
+              <li>Copy this link: <span style={{ color: C.goldSoft }}>app.etaomicron.org</span></li>
+              <li>Open it in <b>Safari</b>, then follow the steps shown there.</li>
+            </>
+          )}
+          {platform === "ios-safari" && (
+            <>
+              <li>Tap the <b>Share</b> button (square with an arrow ↑) in Safari's toolbar.</li>
+              <li>Scroll down and tap <b>Add to Home Screen</b>.</li>
+              <li>Tap <b>Add</b>. Open the app from the new icon and sign in once.</li>
+            </>
+          )}
+          {platform === "android" && (
+            <>
+              <li>Tap Chrome's <b>⋮</b> menu (top right).</li>
+              <li>Tap <b>Install app</b> or <b>Add to Home screen</b>.</li>
+            </>
+          )}
+        </ol>
+      )}
+    </div>
   );
 }
 
@@ -2171,7 +2293,7 @@ function TabBar({ tab, setTab, member }) {
     { id: "feed", icon: Images, label: "Feed" },
   ];
   return (
-    <div className="flex items-center justify-around py-2" style={{ borderTop: `1px solid ${C.line}`, background: "#fff" }}>
+    <div className="flex items-center justify-around pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]" style={{ borderTop: `1px solid ${C.line}`, background: "#fff" }}>
       {items.map(it => {
         const Icon = it.icon;
         const active = tab === it.id;
