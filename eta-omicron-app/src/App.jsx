@@ -843,7 +843,7 @@ function HomeScreen({ member, events }) {
       <div className="rounded-sm p-4 mb-5" style={{ background: C.purple }}>
         <div className="text-xs mb-1" style={{ color: C.goldSoft, ...sans, letterSpacing: "0.1em" }}>CHAPTER HISTORY</div>
         <div className="text-sm leading-relaxed" style={{ color: C.ivory, ...sans }}>
-          Chartered to serve Calhoun County and the surrounding community through Manhood, Scholarship, Perseverance, and Uplift.
+          Chartered to serve our community through Manhood, Scholarship, Perseverance, and Uplift.
         </div>
       </div>
       <TicketsOnSale limit={2} />
