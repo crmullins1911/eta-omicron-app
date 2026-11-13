@@ -20,6 +20,13 @@ function urlBase64ToUint8Array(base64String) {
   return outputArray;
 }
 
+// Event dates are stored as plain "YYYY-MM-DD". new Date("2026-12-05") reads that as
+// midnight UTC, which is the evening of Dec 4 in Georgia — so build the date in local time.
+function eventDay(value) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || "");
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(value);
+}
+
 // ---- Design tokens ----
 const C = {
   purpleDeep: "#241536",
@@ -583,6 +590,19 @@ function AppShell({ member, tab, setTab }) {
     loadEvents();
   };
 
+  // Returns an error message (or null) so the form can stay open and say what went wrong.
+  const addEvent = async (fields) => {
+    const { error } = await supabase.from("events").insert(fields);
+    if (error) {
+      console.error("Add event failed:", error);
+      return error.code === "42501" || /row-level security/i.test(error.message)
+        ? "You don't have permission to add events yet. An officer needs to run the events setup in Supabase."
+        : "Couldn't save the event. Check your connection and try again.";
+    }
+    loadEvents();
+    return null;
+  };
+
   const deleteEvent = async (eventId) => {
     await supabase.from("events").delete().eq("id", eventId);
     loadEvents();
@@ -646,7 +666,7 @@ function AppShell({ member, tab, setTab }) {
           </div>
         )}
         {tab === "home" && <HomeScreen member={member} events={events} />}
-        {tab === "events" && <EventsScreen events={events} rsvpIds={rsvpIds} toggleRsvp={toggleRsvp} isOfficer={member.is_officer} onUpdate={updateEvent} onDelete={deleteEvent} />}
+        {tab === "events" && <EventsScreen events={events} rsvpIds={rsvpIds} toggleRsvp={toggleRsvp} isOfficer={member.is_officer} onAdd={addEvent} onUpdate={updateEvent} onDelete={deleteEvent} />}
         {tab === "members" && (
           <MembersScreen members={members} isOfficer={member.is_officer} duesPaidIds={duesPaidIds} onAdd={() => setShowAddMember(true)} onRemove={removeMember} />
         )}
@@ -832,8 +852,8 @@ function HomeScreen({ member, events }) {
       {upcoming.map(e => (
         <div key={e.id} className="flex items-center gap-3 py-3" style={{ borderTop: `1px solid ${C.line}` }}>
           <div className="w-11 h-11 flex flex-col items-center justify-center rounded-sm shrink-0" style={{ background: C.ivory, border: `1px solid ${C.gold}` }}>
-            <div className="text-[10px] leading-none" style={{ color: C.inkSoft, ...sans }}>{new Date(e.event_date).toLocaleDateString(undefined, { month: "short" })}</div>
-            <div className="text-sm leading-none mt-0.5" style={{ color: C.ink, ...serif }}>{new Date(e.event_date).getDate()}</div>
+            <div className="text-[10px] leading-none" style={{ color: C.inkSoft, ...sans }}>{eventDay(e.event_date).toLocaleDateString(undefined, { month: "short" })}</div>
+            <div className="text-sm leading-none mt-0.5" style={{ color: C.ink, ...serif }}>{eventDay(e.event_date).getDate()}</div>
           </div>
           <div>
             <div className="text-sm" style={{ color: C.ink, ...sans }}>{e.title}</div>
@@ -956,14 +976,28 @@ function TicketsOnSale({ limit }) {
   );
 }
 
-function EventsScreen({ events, rsvpIds, toggleRsvp, isOfficer, onUpdate, onDelete }) {
+function EventsScreen({ events, rsvpIds, toggleRsvp, isOfficer, onAdd, onUpdate, onDelete }) {
   const [editing, setEditing] = useState(null); // event object or null
+  const [creating, setCreating] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null); // event object or null
 
   return (
     <div className="px-5">
-      <ScreenHeader title="Events" subtitle="Chapter calendar" />
+      <ScreenHeader
+        title="Events"
+        subtitle="Chapter calendar"
+        action={isOfficer && (
+          <button onClick={() => setCreating(true)} aria-label="New event" className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: C.purple }}>
+            <Plus size={16} color={C.ivory} />
+          </button>
+        )}
+      />
       <TicketsOnSale />
+      {events.length === 0 && (
+        <div className="py-6 text-center text-sm" style={{ color: C.inkSoft, ...sans }}>
+          No events yet.{isOfficer && " Tap + to add one."}
+        </div>
+      )}
       {events.map(e => {
         const going = rsvpIds.has(e.id);
         return (
@@ -987,7 +1021,7 @@ function EventsScreen({ events, rsvpIds, toggleRsvp, isOfficer, onUpdate, onDele
               )}
             </div>
             <div className="flex items-center gap-1 mt-1 text-xs" style={{ color: C.inkSoft, ...sans }}>
-              <Clock size={12} /> {new Date(e.event_date).toLocaleDateString()} · {e.event_time}
+              <Clock size={12} /> {eventDay(e.event_date).toLocaleDateString()} · {e.event_time}
             </div>
             <div className="flex items-center gap-1 mt-0.5 text-xs" style={{ color: C.inkSoft, ...sans }}>
               <MapPin size={12} /> {e.location}
@@ -1010,6 +1044,19 @@ function EventsScreen({ events, rsvpIds, toggleRsvp, isOfficer, onUpdate, onDele
           onSave={(fields) => { onUpdate(editing.id, fields); setEditing(null); }}
         />
       )}
+      {creating && (
+        <EditEventModal
+          // An existing row tells the form which optional columns (description,
+          // on_website) the events table has; with no events yet, assume both.
+          columnsFrom={events[0] ?? { description: "", on_website: false }}
+          onClose={() => setCreating(false)}
+          onSave={async (fields) => {
+            const err = await onAdd(fields);
+            if (!err) setCreating(false);
+            return err;
+          }}
+        />
+      )}
       {confirmDelete && (
         <ConfirmModal
           title="Delete Event"
@@ -1023,19 +1070,39 @@ function EventsScreen({ events, rsvpIds, toggleRsvp, isOfficer, onUpdate, onDele
   );
 }
 
-function EditEventModal({ event, onClose, onSave }) {
-  const [title, setTitle] = useState(event.title);
-  const [date, setDate] = useState(event.event_date);
-  const [time, setTime] = useState(event.event_time || "");
-  const [location, setLocation] = useState(event.location || "");
-  const [description, setDescription] = useState(event.description || "");
-  const [onWebsite, setOnWebsite] = useState(Boolean(event.on_website));
+// Used both to edit an existing event (pass `event`) and to create a new one
+// (no `event`; `columnsFrom` is any row, used only to see which columns exist).
+function EditEventModal({ event, columnsFrom, onClose, onSave }) {
+  const isNew = !event;
+  const shape = event ?? columnsFrom ?? {};
+  const [title, setTitle] = useState(event?.title ?? "");
+  const [date, setDate] = useState(event?.event_date ?? "");
+  const [time, setTime] = useState(event?.event_time || "");
+  const [location, setLocation] = useState(event?.location || "");
+  const [description, setDescription] = useState(event?.description || "");
+  const [onWebsite, setOnWebsite] = useState(Boolean(event?.on_website));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const save = async () => {
+    if (!title.trim() || !date) { setError("Add a title and a date."); return; }
+    setError("");
+    setSaving(true);
+    const err = await onSave({
+      title: title.trim(), event_date: date, event_time: time.trim(), location: location.trim(),
+      // Only send columns the events table actually has (they arrive with the event row).
+      ...("description" in shape ? { description: description.trim() } : {}),
+      ...("on_website" in shape ? { on_website: onWebsite } : {}),
+    });
+    setSaving(false);
+    if (err) setError(err);
+  };
 
   return (
     <div className="absolute inset-0 z-30 flex items-end" style={{ background: "rgba(36,21,54,0.55)" }}>
-      <div className="w-full rounded-t-2xl p-5" style={{ background: "#fff" }}>
+      <div className="w-full rounded-t-2xl p-5 max-h-full overflow-y-auto pb-[max(1.25rem,env(safe-area-inset-bottom))]" style={{ background: "#fff" }}>
         <div className="flex items-center justify-between mb-4">
-          <div className="text-lg" style={{ ...serif, color: C.ink }}>Edit Event</div>
+          <div className="text-lg" style={{ ...serif, color: C.ink }}>{isNew ? "New Event" : "Edit Event"}</div>
           <button onClick={onClose}><X size={18} color={C.inkSoft} /></button>
         </div>
         <label className="text-xs" style={{ color: C.inkSoft, ...sans }}>Title</label>
@@ -1046,28 +1113,25 @@ function EditEventModal({ event, onClose, onSave }) {
         <input value={time} onChange={e => setTime(e.target.value)} placeholder="e.g. 7:00 PM" className="w-full mt-1 mb-3 px-3 py-2 rounded-sm text-sm" style={{ border: `1px solid ${C.line}`, ...sans }} />
         <label className="text-xs" style={{ color: C.inkSoft, ...sans }}>Location</label>
         <input value={location} onChange={e => setLocation(e.target.value)} className="w-full mt-1 mb-3 px-3 py-2 rounded-sm text-sm" style={{ border: `1px solid ${C.line}`, ...sans }} />
-        {"description" in event && <>
+        {"description" in shape && <>
         <label className="text-xs" style={{ color: C.inkSoft, ...sans }}>Description (shown on the public website)</label>
         <textarea value={description} onChange={e => setDescription(e.target.value)} rows={2} className="w-full mt-1 mb-3 px-3 py-2 rounded-sm text-sm" style={{ border: `1px solid ${C.line}`, ...sans }} />
         </>}
-        {"on_website" in event && <label className="flex items-center justify-between gap-3 mb-5 px-3 py-3 rounded-sm cursor-pointer" style={{ background: C.ivory, ...sans }}>
+        {"on_website" in shape && <label className="flex items-center justify-between gap-3 mb-5 px-3 py-3 rounded-sm cursor-pointer" style={{ background: C.ivory, ...sans }}>
           <span>
             <span className="block text-sm" style={{ color: C.ink }}>Show on public website</span>
             <span className="block text-[11px]" style={{ color: C.inkSoft }}>Visitors to etaomicron.org will see this event.</span>
           </span>
           <input type="checkbox" checked={onWebsite} onChange={e => setOnWebsite(e.target.checked)} className="w-5 h-5 shrink-0" style={{ accentColor: C.purple }} />
         </label>}
+        {error && <div className="mb-3 text-xs" style={{ color: "#A15A3C", ...sans }}>{error}</div>}
         <button
-          onClick={() => onSave({
-            title, event_date: date, event_time: time, location,
-            // Only send columns the events table actually has (they arrive with the event row).
-            ...("description" in event ? { description } : {}),
-            ...("on_website" in event ? { on_website: onWebsite } : {}),
-          })}
+          onClick={save}
+          disabled={saving}
           className="w-full py-3 rounded-sm font-medium"
-          style={{ background: C.purple, color: C.ivory, ...sans }}
+          style={{ background: C.purple, color: C.ivory, opacity: saving ? 0.6 : 1, ...sans }}
         >
-          Save Changes
+          {saving ? "Saving…" : isNew ? "Add Event" : "Save Changes"}
         </button>
       </div>
     </div>
