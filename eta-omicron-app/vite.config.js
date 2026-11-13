@@ -13,7 +13,7 @@ export default defineConfig({
       srcDir: "src",
       filename: "sw.js",
       registerType: "autoUpdate",
-      includeAssets: ["icon-192.png", "icon-512.png"],
+      includeAssets: ["icon-192.png", "icon-512.png", "icon-maskable-512.png", "apple-touch-icon.png"],
       manifest: {
         name: "Eta Omicron",
         short_name: "Eta Omicron",
@@ -21,11 +21,15 @@ export default defineConfig({
         theme_color: "#452C7A",
         background_color: "#241536",
         display: "standalone",
+        id: "/",
         start_url: "/",
+        scope: "/",
+        orientation: "portrait",
         icons: [
-          { src: "icon-192.png", sizes: "192x192", type: "image/png" },
-          { src: "icon-512.png", sizes: "512x512", type: "image/png" },
-          { src: "icon-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
+          { src: "icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
+          { src: "icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
+          // Padded version so Android's round/squircle icon crop doesn't clip the letters.
+          { src: "icon-maskable-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
         ],
       },
     }),

@@ -3,6 +3,14 @@ import ReactDOM from "react-dom/client";
 import App from "./App.jsx";
 import "./index.css";
 
+// Android/Chrome fires this once, often before the member has signed in,
+// so catch it here and hand it to the in-app "Install" button later.
+window.addEventListener("beforeinstallprompt", (e) => {
+  e.preventDefault();
+  window.__eoInstallPrompt = e;
+  window.dispatchEvent(new Event("eo-install-ready"));
+});
+
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
     <App />
