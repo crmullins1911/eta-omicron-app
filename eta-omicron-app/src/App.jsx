@@ -1002,6 +1002,12 @@ function EventsScreen({ events, rsvpIds, toggleRsvp, isOfficer, onAdd, onUpdate,
         const going = rsvpIds.has(e.id);
         return (
           <div key={e.id} className="mb-3 p-4 rounded-sm" style={{ background: "#fff", borderTop: `3px solid ${going ? C.green : C.gold}` }}>
+            {e.image_url && (
+              // object-contain so a tall flyer shows in full instead of being cropped.
+              <div className="-mx-4 -mt-4 mb-3" style={{ background: C.ivory }}>
+                <StorageImage bucket={EVENT_PHOTO_BUCKET} path={e.image_url} className="w-full max-h-96 min-h-[6rem] object-contain" />
+              </div>
+            )}
             <div className="flex items-start justify-between">
               <div>
                 <div className="text-base" style={{ color: C.ink, ...serif }}>{e.title}</div>
@@ -1048,7 +1054,7 @@ function EventsScreen({ events, rsvpIds, toggleRsvp, isOfficer, onAdd, onUpdate,
         <EditEventModal
           // An existing row tells the form which optional columns (description,
           // on_website) the events table has; with no events yet, assume both.
-          columnsFrom={events[0] ?? { description: "", on_website: false }}
+          columnsFrom={events[0] ?? { description: "", on_website: false, image_url: null }}
           onClose={() => setCreating(false)}
           onSave={async (fields) => {
             const err = await onAdd(fields);
@@ -1070,6 +1076,66 @@ function EventsScreen({ events, rsvpIds, toggleRsvp, isOfficer, onAdd, onUpdate,
   );
 }
 
+const EVENT_PHOTO_BUCKET = "event-photos";
+
+// Shows a photo from a private storage bucket via a short-lived signed link.
+function StorageImage({ bucket, path, className }) {
+  const [url, setUrl] = useState(null);
+  useEffect(() => {
+    let active = true;
+    supabase.storage.from(bucket).createSignedUrl(path, 3600).then(({ data }) => {
+      if (active && data) setUrl(data.signedUrl);
+    });
+    return () => { active = false; };
+  }, [bucket, path]);
+  if (!url) return <div className={className} style={{ background: "#F2EEE0" }} />;
+  return <img src={url} alt="" className={className} />;
+}
+
+function EventPhotoField({ imagePath, previewUrl, uploading, onPick, onRemove }) {
+  const inputRef = useRef(null);
+  const choose = () => inputRef.current?.click();
+  return (
+    <div className="mb-3">
+      <label className="text-xs" style={{ color: C.inkSoft, ...sans }}>Photo or flyer (optional)</label>
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={e => { onPick(e.target.files?.[0]); e.target.value = ""; }}
+      />
+      {imagePath || uploading ? (
+        <div className="relative mt-1 rounded-sm overflow-hidden" style={{ border: `1px solid ${C.line}` }}>
+          {uploading ? (
+            <div className="h-36 flex items-center justify-center text-xs" style={{ background: "#F2EEE0", color: C.inkSoft, ...sans }}>Uploading…</div>
+          ) : previewUrl ? (
+            <img src={previewUrl} alt="" className="h-36 w-full object-contain" style={{ background: C.ivory }} />
+          ) : (
+            <StorageImage bucket={EVENT_PHOTO_BUCKET} path={imagePath} className="h-36 w-full object-contain" />
+          )}
+          {!uploading && (
+            <div className="absolute bottom-2 right-2 flex gap-2">
+              <button type="button" onClick={choose} className="text-[11px] px-2 py-1 rounded-sm" style={{ background: "rgba(255,255,255,0.92)", color: C.ink, ...sans }}>Change</button>
+              <button type="button" onClick={onRemove} className="text-[11px] px-2 py-1 rounded-sm" style={{ background: "rgba(255,255,255,0.92)", color: "#A15A3C", ...sans }}>Remove</button>
+            </div>
+          )}
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={choose}
+          className="w-full mt-1 h-20 rounded-sm flex flex-col items-center justify-center gap-1 text-xs"
+          style={{ border: `1px dashed ${C.purpleSoft}`, color: C.purple, background: C.ivory, ...sans }}
+        >
+          <Camera size={18} color={C.purple} />
+          Add a photo
+        </button>
+      )}
+    </div>
+  );
+}
+
 // Used both to edit an existing event (pass `event`) and to create a new one
 // (no `event`; `columnsFrom` is any row, used only to see which columns exist).
 function EditEventModal({ event, columnsFrom, onClose, onSave }) {
@@ -1081,11 +1147,31 @@ function EditEventModal({ event, columnsFrom, onClose, onSave }) {
   const [location, setLocation] = useState(event?.location || "");
   const [description, setDescription] = useState(event?.description || "");
   const [onWebsite, setOnWebsite] = useState(Boolean(event?.on_website));
+  const [imagePath, setImagePath] = useState(event?.image_url || null);
+  const [previewUrl, setPreviewUrl] = useState(null); // local preview of a just-picked photo
+  const [uploading, setUploading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const hasPhotoColumn = "image_url" in shape;
+
+  const pickPhoto = async (file) => {
+    if (!file) return;
+    setError("");
+    setUploading(true);
+    const compressed = await compressImage(file);
+    const result = await uploadFileToBucket(compressed, EVENT_PHOTO_BUCKET, "events");
+    setUploading(false);
+    if (result) {
+      setImagePath(result.file_path);
+      setPreviewUrl(URL.createObjectURL(compressed));
+    }
+  };
+
+  const removePhoto = () => { setImagePath(null); setPreviewUrl(null); };
   const [error, setError] = useState("");
 
   const save = async () => {
     if (!title.trim() || !date) { setError("Add a title and a date."); return; }
+    if (uploading) { setError("Wait for the photo to finish uploading."); return; }
     setError("");
     setSaving(true);
     const err = await onSave({
@@ -1093,6 +1179,7 @@ function EditEventModal({ event, columnsFrom, onClose, onSave }) {
       // Only send columns the events table actually has (they arrive with the event row).
       ...("description" in shape ? { description: description.trim() } : {}),
       ...("on_website" in shape ? { on_website: onWebsite } : {}),
+      ...(hasPhotoColumn ? { image_url: imagePath } : {}),
     });
     setSaving(false);
     if (err) setError(err);
@@ -1113,6 +1200,15 @@ function EditEventModal({ event, columnsFrom, onClose, onSave }) {
         <input value={time} onChange={e => setTime(e.target.value)} placeholder="e.g. 7:00 PM" className="w-full mt-1 mb-3 px-3 py-2 rounded-sm text-sm" style={{ border: `1px solid ${C.line}`, ...sans }} />
         <label className="text-xs" style={{ color: C.inkSoft, ...sans }}>Location</label>
         <input value={location} onChange={e => setLocation(e.target.value)} className="w-full mt-1 mb-3 px-3 py-2 rounded-sm text-sm" style={{ border: `1px solid ${C.line}`, ...sans }} />
+        {hasPhotoColumn && (
+          <EventPhotoField
+            imagePath={imagePath}
+            previewUrl={previewUrl}
+            uploading={uploading}
+            onPick={pickPhoto}
+            onRemove={removePhoto}
+          />
+        )}
         {"description" in shape && <>
         <label className="text-xs" style={{ color: C.inkSoft, ...sans }}>Description (shown on the public website)</label>
         <textarea value={description} onChange={e => setDescription(e.target.value)} rows={2} className="w-full mt-1 mb-3 px-3 py-2 rounded-sm text-sm" style={{ border: `1px solid ${C.line}`, ...sans }} />
