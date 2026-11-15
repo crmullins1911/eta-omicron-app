@@ -497,6 +497,8 @@ function AppShell({ member, tab, setTab }) {
   const [paymentItems, setPaymentItems] = useState([]);
   const [myItemPayments, setMyItemPayments] = useState(new Set()); // item_ids I've paid
   const [likes, setLikes] = useState({}); // { [postId]: { count, mine } }
+  // Post ids whose photo is on the website's Media page. null = the media database update hasn't been run yet.
+  const [mediaPostIds, setMediaPostIds] = useState(null);
   const [showAddMember, setShowAddMember] = useState(false);
   const [notifStatus, setNotifStatus] = useState(
     typeof Notification !== "undefined" ? Notification.permission : "unsupported"
@@ -554,8 +556,12 @@ function AppShell({ member, tab, setTab }) {
       setLikes(map);
     });
 
+  const loadMediaPosts = () => supabase.from("media_items").select("post_id").not("post_id", "is", null)
+    .then(({ data, error }) => setMediaPostIds(error ? null : new Set((data ?? []).map(m => String(m.post_id)))));
+
   useEffect(() => {
     loadMembers(); loadEvents(); loadRsvps(); loadFeed(); loadDues(); loadLikes(); loadPaymentItems(); loadMyItemPayments();
+    if (member.is_officer) loadMediaPosts();
 
     const channel = supabase
       .channel("feed_live")
@@ -648,8 +654,52 @@ function AppShell({ member, tab, setTab }) {
     loadFeed();
   };
 
-  const addPost = async (caption, imagePath) => {
-    await supabase.from("posts").insert({ author_id: member.id, caption, image_url: imagePath ?? null });
+  // Officers put a feed photo on the public website's Media page (www.etaomicron.org/media).
+  // The photo is copied from the private feed-photos bucket into the public "media" bucket, and a
+  // media_items row (linked by post_id) makes it show up in the website's gallery.
+  const addPostToMedia = async (post) => {
+    const { data: blob, error: dlError } = await supabase.storage.from("feed-photos").download(post.image_url);
+    if (dlError || !blob) { alert("Couldn't read that photo: " + (dlError?.message ?? "unknown error")); return false; }
+    const ext = (post.image_url.split(".").pop() || "jpg").toLowerCase();
+    const storagePath = `feed/${post.id}-${Date.now()}.${ext}`;
+    const { error: upError } = await supabase.storage.from("media").upload(storagePath, blob, { contentType: blob.type || "image/jpeg" });
+    if (upError) { alert("Couldn't add the photo to the Media page: " + upError.message); return false; }
+    const url = supabase.storage.from("media").getPublicUrl(storagePath).data.publicUrl;
+    const caption = (post.caption || "").trim();
+    const title = caption ? (caption.length > 100 ? caption.slice(0, 97) + "…" : caption) : "Chapter photo";
+    const { error } = await supabase.from("media_items").insert({ title, type: "image", url, storage_path: storagePath, post_id: post.id });
+    if (error) {
+      await supabase.storage.from("media").remove([storagePath]);
+      alert("Couldn't add the photo to the Media page: " + error.message);
+      return false;
+    }
+    return true;
+  };
+
+  const removePostFromMedia = async (post) => {
+    const { data: rows } = await supabase.from("media_items").select("storage_path").eq("post_id", post.id);
+    const { error } = await supabase.from("media_items").delete().eq("post_id", post.id);
+    if (error) { alert("Couldn't remove the photo from the Media page: " + error.message); return; }
+    const paths = (rows ?? []).map(r => r.storage_path).filter(Boolean);
+    if (paths.length) await supabase.storage.from("media").remove(paths);
+  };
+
+  const togglePostOnMedia = async (post) => {
+    if (mediaPostIds?.has(String(post.id))) {
+      if (!confirm("Remove this photo from the website's Media page?")) return;
+      await removePostFromMedia(post);
+    } else {
+      await addPostToMedia(post);
+    }
+    loadMediaPosts();
+  };
+
+  const addPost = async (caption, imagePath, { toMedia = false } = {}) => {
+    const { data: post, error } = await supabase.from("posts")
+      .insert({ author_id: member.id, caption, image_url: imagePath ?? null })
+      .select().single();
+    if (error) { alert("Couldn't post: " + error.message); return; }
+    if (toMedia && post?.image_url) { await addPostToMedia(post); loadMediaPosts(); }
     loadFeed();
   };
 
@@ -686,7 +736,7 @@ function AppShell({ member, tab, setTab }) {
             onReloadItems={loadPaymentItems}
           />
         )}
-        {tab === "feed" && <FeedScreen feed={feed} onAddPost={addPost} member={member} likes={likes} onToggleLike={toggleLike} isOfficer={member.is_officer} onToggleWebsite={togglePostOnWebsite} />}
+        {tab === "feed" && <FeedScreen feed={feed} onAddPost={addPost} member={member} likes={likes} onToggleLike={toggleLike} isOfficer={member.is_officer} onToggleWebsite={togglePostOnWebsite} mediaPostIds={mediaPostIds} onToggleMedia={togglePostOnMedia} />}
         {tab === "messages" && <MessagesScreen member={member} members={members} />}
       </div>
 
@@ -1613,10 +1663,14 @@ function StatBlock({ label, value }) {
   );
 }
 
-function FeedScreen({ feed, onAddPost, member, likes, onToggleLike, isOfficer, onToggleWebsite }) {
+function FeedScreen({ feed, onAddPost, member, likes, onToggleLike, isOfficer, onToggleWebsite, mediaPostIds, onToggleMedia }) {
   const [caption, setCaption] = useState("");
   const [pendingPhoto, setPendingPhoto] = useState(null);
   const [uploading, setUploading] = useState(false);
+  const [posting, setPosting] = useState(false);
+  const [toMedia, setToMedia] = useState(false); // officer: also put this photo on the website's Media page
+  const [mediaBusyId, setMediaBusyId] = useState(null);
+  const canUseMedia = isOfficer && mediaPostIds != null; // null until the media database update is run
 
   const handlePhoto = async (file) => {
     setUploading(true);
@@ -1626,21 +1680,36 @@ function FeedScreen({ feed, onAddPost, member, likes, onToggleLike, isOfficer, o
     if (result) setPendingPhoto(result);
   };
 
-  const submit = () => {
-    onAddPost(caption, pendingPhoto?.file_path ?? null);
+  const submit = async () => {
+    setPosting(true);
+    await onAddPost(caption, pendingPhoto?.file_path ?? null, { toMedia: canUseMedia && toMedia && Boolean(pendingPhoto) });
+    setPosting(false);
     setCaption("");
     setPendingPhoto(null);
+    setToMedia(false);
+  };
+
+  const toggleMedia = async (post) => {
+    setMediaBusyId(post.id);
+    await onToggleMedia(post);
+    setMediaBusyId(null);
   };
 
   return (
     <div className="px-5">
       <ScreenHeader title="Chapter Feed" subtitle="Photos & updates" />
       {pendingPhoto && <PendingAttachment fileName={pendingPhoto.file_name} onRemove={() => setPendingPhoto(null)} />}
+      {pendingPhoto && canUseMedia && (
+        <label className="flex items-center gap-2 mb-2 text-xs cursor-pointer" style={{ color: C.ink, ...sans }}>
+          <input type="checkbox" checked={toMedia} onChange={e => setToMedia(e.target.checked)} />
+          Also add this photo to the website's Media page
+        </label>
+      )}
       <div className="mb-5 flex gap-2">
         <AttachButton onFile={handlePhoto} accept="image/*" />
         <input value={caption} onChange={e => setCaption(e.target.value)} placeholder={uploading ? "Uploading…" : "Share an update…"} disabled={uploading} className="flex-1 px-3 py-2 rounded-sm text-sm" style={{ border: `1px solid ${C.line}`, ...sans }} />
         <button
-          disabled={uploading || (!caption && !pendingPhoto)}
+          disabled={uploading || posting || (!caption && !pendingPhoto)}
           onClick={submit}
           className="px-3 rounded-sm text-xs disabled:opacity-40"
           style={{ background: C.purple, color: C.ivory, ...sans }}
@@ -1670,6 +1739,22 @@ function FeedScreen({ feed, onAddPost, member, likes, onToggleLike, isOfficer, o
                 >
                   <Heart size={13} fill={like.mine ? "#C0392B" : "none"} /> {like.count}
                 </button>
+                <div className="flex items-center gap-1.5">
+                {canUseMedia && p.image_url && (() => {
+                  const onMedia = mediaPostIds.has(String(p.id));
+                  return (
+                    <button
+                      onClick={() => toggleMedia(p)}
+                      disabled={mediaBusyId === p.id}
+                      className="text-[11px] px-2.5 py-1 rounded-sm disabled:opacity-50"
+                      style={onMedia
+                        ? { background: "#EAF2EC", color: C.green, ...sans }
+                        : { background: C.ivory, color: C.inkSoft, ...sans }}
+                    >
+                      {mediaBusyId === p.id ? "Working…" : onMedia ? "✓ On Media page" : "Add to Media"}
+                    </button>
+                  );
+                })()}
                 {isOfficer && "on_website" in p && (
                   <button
                     onClick={() => onToggleWebsite(p)}
@@ -1678,9 +1763,10 @@ function FeedScreen({ feed, onAddPost, member, likes, onToggleLike, isOfficer, o
                       ? { background: "#EAF2EC", color: C.green, ...sans }
                       : { background: C.ivory, color: C.inkSoft, ...sans }}
                   >
-                    {p.on_website ? "✓ On website" : "Share to website"}
+                    {p.on_website ? "✓ On News" : "Share to News"}
                   </button>
                 )}
+                </div>
               </div>
             </div>
           </div>
