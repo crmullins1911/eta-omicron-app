@@ -3,8 +3,10 @@
 -- How it fits the existing setup:
 --   * dues_payments keeps its meaning: one row = "paid in full for that year". The Members tab,
 --     Dues tab and the Command Center stats all keep reading it unchanged.
---   * dues_installments is new: every payment toward a year's dues, partial or full, Stripe or
---     cash/check/CashApp/PayPal.
+--   * dues_installments is new: every payment toward a year's dues, partial or full, through
+--     Stripe, Square, or recorded by an officer (cash/check/CashApp/PayPal).
+--   * square_checkouts is new: which brother and year each Square payment link is for, so the
+--     Square webhook can tell dues payments apart from ticket sales and in-person swipes.
 --   * When a brother's installments for a year reach his members.dues_amount, a trigger adds his
 --     dues_payments row, so he flips to "Paid" everywhere.
 --
@@ -26,19 +28,26 @@ begin
       member_id         %1$s not null references public.members(id) on delete cascade,
       year              int  not null,
       amount            numeric(10,2) not null check (amount > 0),
-      method            text not null check (method in ('stripe','cash','check','cashapp','paypal')),
+      method            text not null,
       stripe_session_id text unique,
+      square_payment_id text unique,
       note              text,
       recorded_by       %1$s references public.members(id) on delete set null,
       created_at        timestamptz not null default now()
     )$t$, id_type);
 end $$;
 
+-- If an earlier copy of this file was already run, bring the table up to date.
+alter table public.dues_installments add column if not exists square_payment_id text unique;
+alter table public.dues_installments drop constraint if exists dues_installments_method_check;
+alter table public.dues_installments add constraint dues_installments_method_check
+  check (method in ('stripe','square','cash','check','cashapp','paypal'));
+
 create index if not exists dues_installments_member_year on public.dues_installments (member_id, year);
 
 -- 2) Who can see and add installments.
 --    Brothers see their own; officers see everyone's and can record cash/check/CashApp/PayPal.
---    Stripe installments are written only by the Stripe webhook (service role, which skips RLS).
+--    Stripe and Square installments are written only by their webhooks (service role, which skips RLS).
 --    Nobody edits or deletes from the app — fix mistakes in the SQL editor, so the record stays honest.
 alter table public.dues_installments enable row level security;
 grant select, insert on public.dues_installments to authenticated;
@@ -62,8 +71,9 @@ create policy "Officers record offline payments"
   on public.dues_installments for insert to authenticated
   with check (
     public.current_member_is_officer()
-    and method <> 'stripe'
+    and method in ('cash','check','cashapp','paypal')
     and stripe_session_id is null
+    and square_payment_id is null
     and recorded_by in (select id from public.members where auth_user_id = auth.uid())
   );
 
@@ -117,3 +127,27 @@ left join (
 ) dp on dp.member_id = m.id;
 
 grant select on public.dues_balances to authenticated;
+
+-- 5) Square payment links. Written and read only by the Square functions (service role);
+--    RLS is on with no policies, so app users can't see or change them.
+do $$
+declare id_type text;
+begin
+  select format_type(atttypid, atttypmod) into id_type
+    from pg_attribute
+   where attrelid = 'public.members'::regclass and attname = 'id';
+
+  execute format($t$
+    create table if not exists public.square_checkouts (
+      order_id          text primary key,
+      payment_link_id   text not null,
+      member_id         %1$s not null references public.members(id) on delete cascade,
+      kind              text not null default 'dues' check (kind in ('dues')),
+      year              int  not null,
+      amount            numeric(10,2) not null check (amount > 0),
+      created_at        timestamptz not null default now(),
+      completed_at      timestamptz
+    )$t$, id_type);
+end $$;
+
+alter table public.square_checkouts enable row level security;

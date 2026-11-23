@@ -1,12 +1,11 @@
-# Partial dues payments — setup
+# Partial dues payments + Square — setup
 
-Brothers can now pay dues in full or in parts, and officers can record cash, check,
-CashApp and PayPal payments. Once a brother's payments add up to his dues, he shows as
-**Paid** everywhere (Members tab, Dues tab, Command Center), exactly as before.
+Brothers can pay dues in full or in parts, by card through **Stripe** or through **Square**
+(Cash App Pay, Apple Pay, Google Pay or card). Officers can record cash, check, CashApp and
+PayPal payments. Once a brother's payments add up to his dues, he shows as **Paid**
+everywhere (Members tab, Dues tab, Command Center), exactly as before.
 
-Deploy in this order. **Don't merge the app changes before step 2 is live**: until the
-checkout function knows about partial amounts, a brother who has already paid part would
-be charged his full dues again.
+Steps 1–3 are all that's needed to go live. Step 5 (Stripe partial payments) can come later.
 
 ## 1. Run the database update
 Supabase → SQL Editor → paste `supabase/migrations/20261122_partial_dues.sql` → Run.
@@ -16,11 +15,61 @@ Before running, check that `dues_payments` accepts a row with just `member_id` a
 (Table Editor → dues_payments → any other column marked "not null" with no default?).
 If there is one, give it a default or tell the webmaster first.
 
-## 2. Update the two Stripe functions
-These live in Supabase (Edge Functions), not in this repo.
+## 2. Set up Square
+Use the same Square account as the ticketing app. Do this in **Sandbox** first, then repeat
+with **Production** values when it works.
+
+1. **developer.squareup.com** → sign in with the chapter's Square account → open the app the
+   ticketing site uses (or **+ Create an application**).
+2. **Credentials** → copy the **Access token**. **Locations** → copy the **Location ID**.
+3. Supabase → **Edge Functions → Secrets**, add:
+   - `SQUARE_ACCESS_TOKEN` = the access token
+   - `SQUARE_LOCATION_ID` = the location ID
+   - `SQUARE_ENVIRONMENT` = `sandbox` (change to `production` when going live)
+   - `APP_URL` = `https://app.etaomicron.org`
+4. Deploy the two functions (Dashboard → Edge Functions → Deploy a new function → Via Editor,
+   paste the file, deploy — or with the CLI as below):
+   - `square-create-payment-link` — leave **Verify JWT ON**.
+   - `square-webhook` — turn **Verify JWT OFF** (Square signs its calls instead).
+   ```bash
+   supabase functions deploy square-create-payment-link
+   supabase functions deploy square-webhook --no-verify-jwt
+   ```
+5. Square Developer dashboard → **Webhooks → Subscriptions → Add subscription**:
+   - URL: `https://YOUR-PROJECT.supabase.co/functions/v1/square-webhook`
+   - Events: `payment.created` and `payment.updated`
+   - Save, then copy its **Signature key**.
+6. Back in Supabase secrets, add:
+   - `SQUARE_WEBHOOK_SIGNATURE_KEY` = the signature key
+   - `SQUARE_WEBHOOK_URL` = the webhook URL, **exactly** as entered in step 5
+
+Square sends this webhook for every payment on the account, including ticket sales and swipes
+at events. The webhook only credits payments made from a dues link the app created, and
+ignores the rest, so the ticketing app isn't affected.
+
+## 3. Test, then merge
+In Square Sandbox (test card `4111 1111 1111 1111`, any future date, any CVV):
+1. As a brother, tap **Pay part of it**, enter $25, **Pay with Square**. Back in the app he
+   should show "Paid $25.00 of $… so far" and **Partial** in the officer list (allow a few seconds).
+2. As an officer, **Record payment** for him in cash for part of the rest.
+3. As the brother, pay the rest with Square. He should flip to **Paid**.
+4. A brother who's paid nothing should still see **Pay … by card** (Stripe) for his full dues,
+   and it should work as before.
+
+Then merge; Vercel deploys. Switch the Square secrets to Production values and re-add the
+webhook subscription under Production.
+
+## 4. Until Stripe is updated
+`STRIPE_PARTIAL_READY` in `src/dues.js` is `false`. While it is, the card (Stripe) button only
+appears for a brother's first, full payment — the current Stripe function always charges full
+dues. Partial and remaining-balance payments go through Square. Nothing is double-charged.
+
+## 5. Later: partial payments through Stripe too
+Update the two Stripe functions in Supabase (they aren't in this repo), then set
+`STRIPE_PARTIAL_READY = true`.
 
 ### `create-checkout-session` — the `type: "dues"` branch
-The app now sends an optional `amount` (dollars). No `amount` = pay the whole balance.
+The app sends an optional `amount` (dollars). No `amount` = pay the whole balance.
 
 ```ts
 const MIN_PARTIAL = 25; // keep in step with src/dues.js
@@ -69,12 +118,8 @@ if (error) throw error; // return 500 so Stripe retries
 
 Keep anything else the webhook does for dues (audit log, receipt email) as it is.
 
-## 3. Test with Stripe test mode
-1. Sign in as a brother, tap **Pay part of it**, pay $25 with card `4242 4242 4242 4242`.
-   He should show "Paid $25.00 of $428.00 so far" and **Partial** in the officer list.
-2. As an officer, **Record payment** for him in cash for part of the rest.
-3. As the brother, **Pay remaining**. He should flip to **Paid**.
-4. A brother who's paid nothing should still be charged his full dues with **Pay in full**.
-
-## 4. Merge and deploy the app
-Vercel deploys on merge.
+## Good to know
+- A brother who opens two payment links and pays both can end up overpaid. His dues show as
+  paid; refund the extra from the Square or Stripe dashboard.
+- Square and Stripe each charge their own processing fees; the chapter absorbs them on in-app
+  payments, as with Stripe today.

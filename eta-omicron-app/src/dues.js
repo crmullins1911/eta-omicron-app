@@ -31,7 +31,12 @@ export const OFFLINE_METHODS = [
   { code: "paypal", label: "PayPal" },
 ];
 
-export const METHOD_LABELS = { stripe: "Card (Stripe)", cash: "Cash", check: "Check", cashapp: "CashApp", paypal: "PayPal" };
+export const METHOD_LABELS = { stripe: "Card (Stripe)", square: "Square", cash: "Cash", check: "Check", cashapp: "CashApp", paypal: "PayPal" };
+
+// Stripe charges a brother's full dues until the create-checkout-session function in Supabase is
+// updated for partial amounts (see DUES_PARTIAL_SETUP.md). Until then, partial and remaining-balance
+// payments go through Square only. Flip to true once the Stripe functions are updated.
+export const STRIPE_PARTIAL_READY = false;
 
 // Round to cents, so 0.1 + 0.2 sums don't leave a brother owing $0.0000001.
 export const cents = (n) => Math.round(Number(n) * 100) / 100;

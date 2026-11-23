@@ -5,7 +5,7 @@ import {
   Paperclip, Download, FileText, Lock
 } from "lucide-react";
 import { supabase, SUPABASE_URL } from "./supabaseClient";
-import { DUES_SCHEDULE, DEFAULT_DUES, duesCategoryFor, money, MIN_PARTIAL, OFFLINE_METHODS, METHOD_LABELS, cents } from "./dues";
+import { DUES_SCHEDULE, DEFAULT_DUES, duesCategoryFor, money, MIN_PARTIAL, OFFLINE_METHODS, METHOD_LABELS, cents, STRIPE_PARTIAL_READY } from "./dues";
 
 // Public key only — safe to embed in client code, it's the whole point
 // of VAPID (the private key that actually signs pushes stays server-side).
@@ -633,21 +633,26 @@ function AppShell({ member, tab, setTab }) {
     loadMembers();
   };
 
-  const startCheckout = async (bodyPayload) => {
+  // fn: create-checkout-session (Stripe) or square-create-payment-link (Square). Both answer { url } or { error }.
+  const startCheckout = async (bodyPayload, fn = "create-checkout-session") => {
     const { data: { session } } = await supabase.auth.getSession();
-    const res = await fetch(`${SUPABASE_URL}/functions/v1/create-checkout-session`, {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/${fn}`, {
       method: "POST",
       headers: { Authorization: `Bearer ${session.access_token}`, "Content-Type": "application/json" },
       body: JSON.stringify(bodyPayload),
     });
-    const body = await res.json();
+    const body = await res.json().catch(() => ({}));
     if (body.url) window.location.href = body.url;
     else alert(body.error || "Could not start checkout");
   };
 
   // amount = null pays the full year (the server charges members.dues_amount, as before).
   // A number pays that much toward this year's balance; the server checks it against dues_balances.
-  const payDues = (amount) => startCheckout(amount == null ? { type: "dues" } : { type: "dues", amount: cents(amount) });
+  // provider: "stripe" (card) or "square" (card, Cash App Pay, Apple Pay, Google Pay).
+  const payDues = (amount, provider = "stripe") => startCheckout(
+    amount == null ? { type: "dues" } : { type: "dues", amount: cents(amount) },
+    provider === "square" ? "square-create-payment-link" : "create-checkout-session",
+  );
 
   // Officers record dues paid outside the app (cash, check, CashApp, PayPal).
   const recordDuesPayment = async (memberId, amount, method, note) => {
@@ -1540,23 +1545,30 @@ function DuesScreen({ isOfficer, members, duesPaidIds, installments, onRecordPay
   );
 }
 
-// The signed-in brother's own dues: balance, pay in full or pay part, and what he's paid so far.
+// The signed-in brother's own dues: balance, pay all or part (by card through Stripe, or through
+// Square for Cash App Pay / Apple Pay / Google Pay / card), and what he's paid so far.
 function MyDuesCard({ year, owed, paidSoFar, isPaid, category, onPay, history }) {
   const balance = cents(Math.max(owed - paidSoFar, 0));
-  const [partOpen, setPartOpen] = useState(false);
+  const [partial, setPartial] = useState(false);
   const [amount, setAmount] = useState("");
   const [busy, setBusy] = useState(false);
 
   const min = Math.min(MIN_PARTIAL, balance);
   const value = cents(amount || 0);
-  const valid = amount !== "" && value >= min && value <= balance;
+  const partValid = amount !== "" && value >= min && value <= balance;
+  const ready = !partial || partValid;
+  const shown = partial ? value : balance;
 
-  const pay = async (amt) => {
+  // Nothing paid yet and paying it all: send no amount, so each provider charges his whole dues.
+  const amountToSend = partial ? value : (paidSoFar > 0 ? balance : null);
+  // See STRIPE_PARTIAL_READY in dues.js: until the Stripe function is updated, card through
+  // Stripe is only offered for a first, full payment.
+  const stripeOk = STRIPE_PARTIAL_READY || (!partial && paidSoFar === 0);
+
+  const pay = async (provider) => {
     setBusy(true);
-    try { await onPay(amt); } finally { setBusy(false); }
+    try { await onPay(amountToSend, provider); } finally { setBusy(false); }
   };
-  // Nothing paid yet: "full" means his whole dues, charged the same way as before.
-  const payFull = () => pay(paidSoFar > 0 ? balance : null);
 
   return (
     <>
@@ -1570,59 +1582,57 @@ function MyDuesCard({ year, owed, paidSoFar, isPaid, category, onPay, history })
           <div className="text-xs mb-1" style={{ color: "#B9DCC3", ...sans }}>Paid {money(paidSoFar)} of {money(owed)} so far</div>
         )}
         <div className="text-xs mb-5" style={{ color: "#D9CDEC", ...sans }}>
-          {isPaid
-            ? `You're all set for ${year}.`
-            : `Pay it all at once or in parts${category && paidSoFar === 0 ? `, or ${money(category.cashApp)} by CashApp/PayPal` : ""}.`}
+          {isPaid ? `You're all set for ${year}.` : "Pay it all at once or in parts."}
         </div>
 
         {!isPaid && (
           <>
-            <button onClick={payFull} disabled={busy} className="w-full py-3 rounded-sm font-medium disabled:opacity-50" style={{ background: C.gold, color: C.purpleDeep, ...sans }}>
-              {paidSoFar > 0 ? `Pay remaining ${money(balance)}` : `Pay in full · ${money(balance)}`}
-            </button>
-
-            {!partOpen && balance > min && (
-              <button onClick={() => setPartOpen(true)} className="w-full mt-3 text-sm" style={{ color: C.ivory, ...sans, textDecoration: "underline" }}>
-                Pay part of it
-              </button>
-            )}
-
-            {partOpen && (
-              <div className="mt-4 text-left">
+            {partial && (
+              <div className="mb-4 text-left">
                 <label className="text-xs" style={{ color: "#D9CDEC", ...sans }} htmlFor="partial-amount">
                   Amount to pay now ({money(min)} – {money(balance)})
                 </label>
-                <div className="flex gap-2 mt-1">
-                  <div className="flex-1 flex items-center rounded-sm px-3" style={{ background: "#fff" }}>
-                    <span className="text-sm" style={{ color: C.inkSoft, ...sans }}>$</span>
-                    <input
-                      id="partial-amount"
-                      value={amount}
-                      onChange={e => setAmount(e.target.value.replace(/[^0-9.]/g, ""))}
-                      inputMode="decimal"
-                      placeholder={MIN_PARTIAL.toFixed(2)}
-                      className="w-full py-2 pl-1 text-sm outline-none"
-                      style={{ color: C.ink, ...sans }}
-                    />
-                  </div>
-                  <button
-                    onClick={() => pay(value)}
-                    disabled={!valid || busy}
-                    className="px-4 rounded-sm text-sm font-medium disabled:opacity-40"
-                    style={{ background: C.gold, color: C.purpleDeep, ...sans }}
-                  >
-                    Pay {valid ? money(value) : ""}
-                  </button>
+                <div className="flex items-center rounded-sm px-3 mt-1" style={{ background: "#fff" }}>
+                  <span className="text-sm" style={{ color: C.inkSoft, ...sans }}>$</span>
+                  <input
+                    id="partial-amount"
+                    value={amount}
+                    onChange={e => setAmount(e.target.value.replace(/[^0-9.]/g, ""))}
+                    inputMode="decimal"
+                    placeholder={MIN_PARTIAL.toFixed(2)}
+                    autoFocus
+                    className="w-full py-2 pl-1 text-sm outline-none"
+                    style={{ color: C.ink, ...sans }}
+                  />
                 </div>
-                {amount !== "" && !valid && (
+                {amount !== "" && !partValid && (
                   <div className="text-[11px] mt-1" style={{ color: "#F3C9B8", ...sans }}>
                     Enter between {money(min)} and {money(balance)}.
                   </div>
                 )}
-                <button onClick={() => { setPartOpen(false); setAmount(""); }} className="text-xs mt-2" style={{ color: "#D9CDEC", ...sans, textDecoration: "underline" }}>
-                  Cancel
-                </button>
               </div>
+            )}
+
+            {stripeOk && (
+              <button onClick={() => pay("stripe")} disabled={busy || !ready}
+                className="w-full py-3 rounded-sm font-medium disabled:opacity-40"
+                style={{ background: C.gold, color: C.purpleDeep, ...sans }}>
+                Pay {ready ? money(shown) : ""} by card
+              </button>
+            )}
+            <button onClick={() => pay("square")} disabled={busy || !ready}
+              className={`w-full py-2.5 rounded-sm font-medium disabled:opacity-40 ${stripeOk ? "mt-2" : ""}`}
+              style={stripeOk
+                ? { background: "transparent", color: C.ivory, border: `1px solid ${C.goldSoft}`, ...sans }
+                : { background: C.gold, color: C.purpleDeep, ...sans }}>
+              Pay {ready ? money(shown) : ""} with Square
+              <span className="block text-[11px] font-normal opacity-80">Cash App Pay, Apple Pay, Google Pay or card</span>
+            </button>
+
+            {balance > min && (
+              <button onClick={() => { setPartial(!partial); setAmount(""); }} className="w-full mt-3 text-sm" style={{ color: C.ivory, ...sans, textDecoration: "underline" }}>
+                {partial ? `Pay the full ${money(balance)} instead` : "Pay part of it"}
+              </button>
             )}
           </>
         )}
